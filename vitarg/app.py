@@ -1,6 +1,8 @@
 """Tray application: wires the drag monitor, wheel, dialogs and background jobs together."""
+from __future__ import annotations
 import os, sys, tempfile
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QLockFile, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QBrush, QRadialGradient

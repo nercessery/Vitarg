@@ -166,6 +166,12 @@ class VitargUpdaterSemver(unittest.TestCase):
         self.assertEqual(s.tint, "#12111A")
         self.assertEqual(s.highlight, "#7C3AED")
         self.assertTrue(s.auto_update)
+        try:
+            import PySide6
+            from vitarg.app import selftest
+            self.assertTrue(callable(selftest))
+        except ImportError:
+            pass
 
 
 if __name__ == "__main__":
