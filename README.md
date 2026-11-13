@@ -20,6 +20,7 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 | **Archive** | ZIP, TAR, GZ, 7Z |
 
 ### 🛠️ Tools Wheel (Alt + Shift + Drag)
+- **Inspector** — Deep file inspector: view metadata, resolution, aspect ratio, duration, codecs, SHA-256 hash, and EXIF tags.
 - **Compress** — Multi-pass compression for images, audio, video, and PDFs (lossless & balanced modes).
 - **Resize** — Scale resolution up/down for images, videos, and PDFs (by percentage or exact pixels with aspect ratio locking).
 - **Metadata** — Strip all EXIF / ID3 / media metadata cleanly.
@@ -36,6 +37,11 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 - **Collage** — Arrange photos into responsive grid collages.
 - **Join Videos** — Concat multiple video files with automatic aspect matching.
 - **Extract** — One-click unpack for ZIP, TAR, GZ, and 7Z archives.
+
+### ⚡ Smart Productivity Tools
+- **Undo / Rollback (Ctrl+Z)** — Revert the last operation with one click from the completion dialog, tray menu, or Settings. Safely deletes generated files and restores any backed-up originals.
+- **Auto Rename & Custom Naming** — Set custom filenames or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) directly during operations.
+- **Conversion Preview & Size Estimator** — Real-time estimation of output file size and quality ratio before and during processing.
 
 ---
 

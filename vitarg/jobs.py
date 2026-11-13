@@ -1,13 +1,18 @@
-"""Background workers and the closable orange progress window."""
-import os, sys, threading
+"""Background workers and progress window with Conversion Preview, Auto Rename, and Undo / Rollback."""
+from __future__ import annotations
+import os, subprocess, sys, threading, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QBrush
-from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit, QWidget, QHBoxLayout
+from PySide6.QtWidgets import (QLabel, QPushButton, QTextEdit, QWidget, QHBoxLayout,
+                               QVBoxLayout, QLineEdit)
 
 from .engine import Cancelled
-from .theme import Panel, ORANGE
+from .estimator import estimate_conversion, format_size
+from .rename import apply_custom_rename
+from .theme import Panel, PURPLE
+from .undo import undo_manager, notify_explorer
 
 
 class Worker(QThread):
@@ -31,7 +36,7 @@ class Worker(QThread):
 
 
 class Bar(QWidget):
-    """Custom-drawn orange progress bar (indeterminate until the first real value arrives)."""
+    """Custom-drawn royal purple progress bar (indeterminate until the first real value arrives)."""
 
     def __init__(self):
         super().__init__()
@@ -58,7 +63,7 @@ class Bar(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(0, 0, 0, 55))
         p.drawRoundedRect(r, 6, 6)
-        p.setBrush(ORANGE)
+        p.setBrush(PURPLE)
         if self.value >= 0:
             p.drawRoundedRect(QRectF(0, 0, max(12.0, r.width() * min(1.0, self.value)), r.height()), 6, 6)
         else:
@@ -66,35 +71,86 @@ class Bar(QWidget):
             x = (r.width() + w) * self.phase - w
             path = QPainterPath(); path.addRoundedRect(QRectF(x, 0, w, r.height()), 6, 6)
             clip = QPainterPath(); clip.addRoundedRect(r, 6, 6)
-            p.fillPath(path.intersected(clip), ORANGE)
-
-
-def notify_explorer(paths):
-    if sys.platform != "win32":
-        return
-    import ctypes
-    for d in {str(Path(p).parent) for p in paths}:
-        ctypes.windll.shell32.SHChangeNotify(0x00001000, 0x0005, ctypes.c_wchar_p(d), None)   # UPDATEDIR
+            p.fillPath(path.intersected(clip), PURPLE)
 
 
 class JobWindow(Panel):
     job_done = Signal(object)      # not 'finished': that name belongs to QDialog
 
-    def __init__(self, title: str, subtitle: str, fn):
-        super().__init__(title, 360)
+    def __init__(self, title: str, subtitle: str, fn, sources: list[str] = None, target_or_tool: str = ""):
+        super().__init__(title, 420)
+        self.sources = [str(Path(s)) for s in (sources or [])]
+        self.target = target_or_tool
+        self.outputs: list[str] = []
+        self._auto_close_timer = None
+        self._countdown = 8
+
         self.sub = QLabel(subtitle)
         self.sub.setObjectName("hint")
         self.sub.setAlignment(Qt.AlignCenter)
         self.sub.setWordWrap(True)
-        self.bar = Bar()
         self.body.addWidget(self.sub)
+
+        # 1. Conversion Preview & Output Size Estimator
+        self.preview_lbl = None
+        if self.sources and self.target and self.target not in ("crop", "edit", "metadata", "inspect"):
+            try:
+                est = estimate_conversion(self.sources[0], self.target)
+                self.preview_lbl = QLabel(f"📊 {est['summary']}")
+                self.preview_lbl.setStyleSheet(
+                    "background: rgba(124, 58, 237, 0.15); border: 1px solid rgba(124, 58, 237, 0.35); "
+                    "border-radius: 6px; padding: 5px 8px; color: #E0E7FF; font-size: 11px;"
+                )
+                self.preview_lbl.setWordWrap(True)
+                self.preview_lbl.setAlignment(Qt.AlignCenter)
+                self.body.addWidget(self.preview_lbl)
+            except Exception:
+                pass
+
+        # Progress bar
+        self.bar = Bar()
         self.body.addWidget(self.bar)
+
+        # 2. Auto Rename / Custom Name Input Field
+        self.rename_container = QWidget()
+        ren_lay = QVBoxLayout(self.rename_container)
+        ren_lay.setContentsMargins(0, 4, 0, 4)
+        ren_lay.setSpacing(4)
+
+        ren_header = QLabel("🏷️ Output Name (Optional):")
+        ren_header.setStyleSheet("color: #A0A0AB; font-size: 11px; font-weight: bold;")
+        ren_lay.addWidget(ren_header)
+
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Original name (or type custom / template)...")
+        self.name_input.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.15); "
+            "border-radius: 6px; padding: 4px 8px; color: #FFFFFF;"
+        )
+        ren_lay.addWidget(self.name_input)
+
+        # Template quick buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        for lbl, tag in (("+ Date", "{name}_{date}"), ("+ 01", "{name}_{num}"), ("-vitarg", "{name}-vitarg")):
+            b = QPushButton(lbl)
+            b.setFixedHeight(22)
+            b.setStyleSheet("background: rgba(255, 255, 255, 0.08); font-size: 10px; padding: 2px 6px; border-radius: 4px;")
+            b.clicked.connect(lambda _=False, t=tag: self._append_tag(t))
+            btn_row.addWidget(b)
+        btn_row.addStretch(1)
+        ren_lay.addLayout(btn_row)
+        self.body.addWidget(self.rename_container)
+
+        # Worker initialization
         self.err = None
         self.worker = Worker(fn)
         self.worker.progress.connect(lambda v: self.bar.set_value(v if v > 0 else -1.0))
         self.worker.done.connect(self._done)
         self.worker.crashed.connect(lambda m: self._fail([("Unexpected error", m)]))
-        self.worker.finished.connect(lambda: None)
+
+    def _append_tag(self, tag: str):
+        self.name_input.setText(tag)
 
     def start(self):
         self.show()
@@ -104,17 +160,110 @@ class JobWindow(Panel):
         if errs:
             self._fail(errs, bool(outs))
             return
+
+        # Apply Auto Rename if specified
+        custom = self.name_input.text().strip()
+        if custom and outs:
+            outs = apply_custom_rename(outs, custom)
+
+        self.outputs = list(outs)
         self.bar.set_value(1.0)
+        self.bar.hide()
+        self.rename_container.hide()
         notify_explorer(outs)
-        self.close_and_release()
+
+        # Record to Undo Manager
+        undo_manager.record(self.windowTitle(), outs)
+
+        # Update Subtitle & Show result details
+        out_names = [Path(o).name for o in outs[:3]]
+        if len(outs) > 3:
+            out_names.append(f"... +{len(outs)-3} more")
+        self.sub.setText(f"✅ Success! Generated: {', '.join(out_names)}")
+        self.sub.setStyleSheet("color: #34D399; font-weight: bold;")
+
+        # Action Buttons Row (Undo / Rollback, Open Folder, Close)
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
+
+        self.undo_btn = QPushButton("↩ Undo / Rollback")
+        self.undo_btn.setToolTip("Delete generated files and revert this operation")
+        self.undo_btn.setStyleSheet(
+            "background: rgba(239, 68, 68, 0.25); border: 1px solid rgba(239, 68, 68, 0.6); "
+            "color: #FCA5A5; font-weight: bold; border-radius: 6px; padding: 6px 12px;"
+        )
+        self.undo_btn.clicked.connect(self._on_undo)
+        actions_row.addWidget(self.undo_btn)
+
+        open_btn = QPushButton("📂 Open Folder")
+        open_btn.setStyleSheet("background: rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 6px 10px;")
+        open_btn.clicked.connect(self._open_folder)
+        actions_row.addWidget(open_btn)
+
+        actions_row.addStretch(1)
+
+        self.close_btn = QPushButton(f"Done ({self._countdown}s)")
+        self.close_btn.setObjectName("primary")
+        self.close_btn.clicked.connect(self.close_and_release)
+        actions_row.addWidget(self.close_btn)
+
+        self.body.addLayout(actions_row)
+
+        # Start graceful auto-close countdown
+        self._auto_close_timer = QTimer(self)
+        self._auto_close_timer.timeout.connect(self._on_countdown_tick)
+        self._auto_close_timer.start(1000)
+
+    def _on_countdown_tick(self):
+        self._countdown -= 1
+        if self._countdown <= 0:
+            if self._auto_close_timer:
+                self._auto_close_timer.stop()
+            self.close_and_release()
+        else:
+            self.close_btn.setText(f"Done ({self._countdown}s)")
+
+    def enterEvent(self, e):
+        # Hovering stops countdown so user has unlimited time to use Undo
+        if self._auto_close_timer and self._auto_close_timer.isActive():
+            self._auto_close_timer.stop()
+            self.close_btn.setText("Done")
+        super().enterEvent(e)
+
+    def _on_undo(self):
+        if self._auto_close_timer:
+            self._auto_close_timer.stop()
+        success, msg, _ = undo_manager.undo()
+        if success:
+            self.sub.setText("↩ Reverted! Output file(s) removed.")
+            self.sub.setStyleSheet("color: #F87171; font-weight: bold;")
+            self.undo_btn.setEnabled(False)
+            self.undo_btn.setText("Undone ✓")
+            self.close_btn.setText("Close")
+        else:
+            self.sub.setText(f"Undo failed: {msg}")
+
+    def _open_folder(self):
+        if self._auto_close_timer:
+            self._auto_close_timer.stop()
+        if self.outputs:
+            target = Path(self.outputs[0])
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(f'explorer /select,"{target}"')
+                else:
+                    subprocess.Popen(["open", str(target.parent)])
+            except Exception:
+                pass
 
     def _fail(self, errs, partial=False):
         self.bar.hide()
+        self.rename_container.hide()
         self.sub.setText("Some files could not be processed." if partial else "The operation failed.")
         box = QTextEdit()
         box.setReadOnly(True)
         box.setPlainText("\n\n".join(f"{n}:\n{m}" for n, m in errs))
-        box.setFixedHeight(150)
+        box.setFixedHeight(140)
         self.body.addWidget(box)
         b = QPushButton("Close")
         b.setObjectName("primary")
@@ -124,8 +273,10 @@ class JobWindow(Panel):
         self.raise_()
 
     def close_and_release(self):
+        if self._auto_close_timer:
+            self._auto_close_timer.stop()
         self.hide()
         self.job_done.emit(self)
 
-    def reject(self):          # the ✕ only hides the window; the operation keeps running
-        self.hide()
+    def reject(self):
+        self.close_and_release()

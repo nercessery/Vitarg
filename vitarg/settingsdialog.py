@@ -4,7 +4,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QRadioButton, QSpinBox, QTabWidget, QSlider, QVBoxLayout, QWidget, QGridLayout, QButtonGroup,
-                               QColorDialog)
+                               QColorDialog, QMessageBox)
 
 from . import keys, settings as S, theme, __version__
 from .theme import Panel
@@ -133,7 +133,10 @@ class SettingsDialog(Panel):
         self.btn_update.clicked.connect(self._check_updates)
         self.lbl_update_status = QLabel("")
         self.lbl_update_status.setObjectName("hint")
-        for w in (self.enabled, self.sound, self.login, self.auto_upd, self.btn_shortcut, self.btn_update, self.lbl_update_status,
+        self.btn_undo = QPushButton("↩ Undo Last Operation")
+        self.btn_undo.setStyleSheet("background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); color: #FCA5A5; font-weight: bold;")
+        self.btn_undo.clicked.connect(self._do_undo)
+        for w in (self.enabled, self.sound, self.login, self.auto_upd, self.btn_shortcut, self.btn_undo, self.btn_update, self.lbl_update_status,
                   QLabel("Glass opacity (left = more see-through, applies instantly)"), self.opacity):
             gl.addWidget(w)
         gl.addStretch(1)
@@ -281,6 +284,18 @@ class SettingsDialog(Panel):
         if ok:
             self.btn_shortcut.setText("Desktop Shortcut Created ✓")
             QTimer.singleShot(1500, lambda: self.btn_shortcut.setText("Create Desktop Shortcut"))
+
+    def _do_undo(self):
+        from .undo import undo_manager
+        if not undo_manager.can_undo():
+            QMessageBox.information(self, "Vitarg", "No recent operations to undo.")
+            return
+        desc = undo_manager.last_description()
+        success, msg, _ = undo_manager.undo()
+        if success:
+            QMessageBox.information(self, "Vitarg Undo", f"Operation reverted:\n{desc}")
+        else:
+            QMessageBox.warning(self, "Vitarg Undo", f"Undo failed: {msg}")
 
     def _check_updates(self):
         self.btn_update.setEnabled(False)

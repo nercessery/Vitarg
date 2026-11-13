@@ -66,6 +66,10 @@ def draw_icon(p: QPainter, name: str, cx: float, cy: float, size: float, color: 
     elif name == "resize":
         R(-9, -9, 18, 18, 2)
         _arrow(p, 5, 5, 10, 10, 4); _arrow(p, -5, -5, -10, -10, 4)
+    elif name == "inspect":
+        p.drawEllipse(QPointF(-2, -2), 6, 6)
+        L(2.5, 2.5, 8.5, 8.5)
+        L(-4, -2, 0, -2); L(-2, -4, -2, 0)
     else:
         p.drawEllipse(QPointF(0, 0), 8, 8)
     p.restore()

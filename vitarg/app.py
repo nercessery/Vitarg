@@ -10,12 +10,14 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import engine, tools, theme, __version__
 from .dialogs import CropDialog, FormDialog
+from .inspector import InspectorDialog
 from .jobs import JobWindow
 from .monitor import DragMonitor
 from .settings import Settings, label
 from .settingsdialog import SettingsDialog
 from .wheel import Wheel
 from .updater import check_github_update, UpdateDialog
+from .undo import undo_manager
 
 
 def make_icon() -> QIcon:
@@ -46,10 +48,13 @@ class Controller:
         self.act_enabled = QAction("Active", menu, checkable=True, checked=settings.enabled)
         self.act_enabled.toggled.connect(self._toggle)
         self.info = QAction("", menu); self.info.setEnabled(False)
+        self.act_undo = QAction("↩ Undo Last Operation", menu)
+        self.act_undo.setShortcut("Ctrl+Z")
+        self.act_undo.triggered.connect(self._tray_undo)
         st = QAction("Settings…", menu); st.triggered.connect(self.open_settings)
         upd = QAction("Check for Updates…", menu); upd.triggered.connect(lambda: self.check_for_updates(True))
         quit_ = QAction("Quit Vitarg", menu); quit_.triggered.connect(self.quit)
-        for a in (self.info, self.act_enabled, st, upd):
+        for a in (self.info, self.act_enabled, self.act_undo, st, upd):
             menu.addAction(a)
         menu.addSeparator(); menu.addAction(quit_)
         self.menu = menu
@@ -96,6 +101,17 @@ class Controller:
         elif interactive:
             QMessageBox.information(None, "Vitarg", f"You are running the latest version of Vitarg (v{__version__}).")
 
+    def _tray_undo(self):
+        if not undo_manager.can_undo():
+            QMessageBox.information(None, "Vitarg", "No recent operations to undo.")
+            return
+        desc = undo_manager.last_description()
+        success, msg, _ = undo_manager.undo()
+        if success:
+            QMessageBox.information(None, "Vitarg Undo", f"Operation reverted:\n{desc}")
+        else:
+            QMessageBox.warning(None, "Vitarg Undo", f"Undo failed: {msg}")
+
     # -------------------------------------------------------------
     def on_choice(self, kind: str, ident: str, paths: list):
         paths = [str(Path(p)) for p in paths]
@@ -103,8 +119,14 @@ class Controller:
             src_fmt = "/".join(sorted({engine.fmt_of(p).upper() for p in paths}))
             title = f"Converting {src_fmt} → {ident.upper()}"
             fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel)
+            target_or_tool = ident
         else:
             tool = tools.BY_ID[ident]
+            if tool.custom == "inspect":
+                dlg = InspectorDialog(paths[0])
+                dlg.show(); dlg.raise_(); dlg.activateWindow()
+                dlg.exec()
+                return
             params = {}
             if tool.custom == "crop":
                 dlg = CropDialog(paths[0])
@@ -120,8 +142,9 @@ class Controller:
                 params = dlg.values()
             title = tool.label.title()
             fn = lambda prog, cancel: tools.run_tool(ident, paths, params, self.s, prog, cancel)
+            target_or_tool = ident
         sub = Path(paths[0]).name if len(paths) == 1 else f"{len(paths)} files"
-        win = JobWindow(title, sub, fn)
+        win = JobWindow(title, sub, fn, sources=paths, target_or_tool=target_or_tool)
         self.jobs.add(win)
         win.job_done.connect(lambda w: (self.jobs.discard(w), w.deleteLater()))
         win.start()

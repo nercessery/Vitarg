@@ -161,7 +161,7 @@ class VitargUpdaterSemver(unittest.TestCase):
         import vitarg.cropmath as vc
         import vitarg.keys as vk
         import vitarg.settings as vs
-        self.assertEqual(vitarg.__version__, "1.0.0")
+        self.assertEqual(vitarg.__version__, "1.0.1")
         s = vs.Settings()
         self.assertEqual(s.tint, "#12111A")
         self.assertEqual(s.highlight, "#7C3AED")
@@ -172,6 +172,75 @@ class VitargUpdaterSemver(unittest.TestCase):
             self.assertTrue(callable(selftest))
         except ImportError:
             pass
+
+
+class NewFeaturesTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_undo_manager_delete_created(self):
+        from vitarg.undo import UndoManager
+        mgr = UndoManager()
+        f1 = self.tmp / "test_out.txt"
+        f1.write_text("created file")
+        self.assertTrue(f1.exists())
+        mgr.record("Test create", [str(f1)])
+        self.assertTrue(mgr.can_undo())
+        ok, msg, affected = mgr.undo()
+        self.assertTrue(ok)
+        self.assertFalse(f1.exists())
+        self.assertTrue(any(Path(f1).resolve() == Path(a).resolve() for a in affected))
+
+    def test_undo_manager_restore_overwritten(self):
+        from vitarg.undo import UndoManager
+        mgr = UndoManager()
+        orig = self.tmp / "existing.txt"
+        orig.write_text("original content")
+        mgr.record("Test overwrite", [str(orig)], overwritten_targets=[str(orig)])
+        # Now simulate file being overwritten
+        orig.write_text("overwritten content")
+        self.assertEqual(orig.read_text(), "overwritten content")
+        ok, msg, affected = mgr.undo()
+        self.assertTrue(ok)
+        self.assertEqual(orig.read_text(), "original content")
+
+    def test_auto_rename_templates(self):
+        from vitarg.rename import format_rename, apply_custom_rename
+        src = self.tmp / "mypicture.png"
+        src.write_text("dummy")
+        # Template with {name} and {num}
+        res = format_rename(src, "{name}_{num}", ".jpg", index=2)
+        self.assertEqual(res, "mypicture_02.jpg")
+        # Literal name
+        res_lit = format_rename(src, "custom_vacation", ".webp", index=1)
+        self.assertEqual(res_lit, "custom_vacation.webp")
+        # Apply rename on existing file
+        new_paths = apply_custom_rename([str(src)], "final_photo")
+        self.assertEqual(Path(new_paths[0]).name, "final_photo.png")
+        self.assertTrue(Path(new_paths[0]).exists())
+
+    def test_estimator_size_and_quality(self):
+        from vitarg.estimator import format_size, estimate_conversion
+        self.assertEqual(format_size(500), "500 B")
+        self.assertEqual(format_size(2048), "2.0 KB")
+        self.assertEqual(format_size(5 * 1024 * 1024), "5.0 MB")
+        sample = self.tmp / "sample.png"
+        sample.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+        est = estimate_conversion(sample, "jpg")
+        self.assertIn("Original:", est["summary"])
+        self.assertIn("Est. Output:", est["summary"])
+        self.assertGreater(est["src_size"], 0)
+
+    def test_file_inspector_info(self):
+        from vitarg.inspector import get_file_info
+        f = self.tmp / "doc.txt"
+        f.write_text("hello world inspector test")
+        info = get_file_info(f)
+        self.assertEqual(info["name"], "doc.txt")
+        self.assertEqual(info["format"], "TXT")
+        self.assertIn("bytes", info["size_str"])
+        self.assertGreater(len(info["sha256"]), 10)
 
 
 if __name__ == "__main__":

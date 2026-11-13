@@ -62,6 +62,7 @@ TOOLS = [
         {"key": "spacing", "label": "Spacing (px)", "kind": INT, "min": 0, "max": 100, "default": 16},
         {"key": "bg", "label": "Background", "kind": COLOR, "default": "#FFFFFF"}]),
     Tool("join", "JOIN VIDEOS", ("video",), multi=True),
+    Tool("inspect", "INSPECTOR", ("image", "audio", "video", "pdf", "archive", "document", "doc"), batch_ok=False, custom="inspect"),
 ]
 BY_ID = {t.id: t for t in TOOLS}
 
