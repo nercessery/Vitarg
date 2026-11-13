@@ -73,52 +73,10 @@ Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 & $py -m PyInstaller --noconfirm --clean --windowed --name Vitarg `
     --icon assets\vitarg.ico `
     --add-data "assets;assets" --add-data "tools;tools" `
-    --collect-all pillow_heif --collect-all py7zr --collect-submodules pymupdf --collect-data pymupdf `
+    --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf `
     --hidden-import win32com.client --hidden-import pythoncom --hidden-import winsound `
-    --exclude-module PySide6.QtNetwork `
-    --exclude-module PySide6.QtSql `
-    --exclude-module PySide6.QtXml `
-    --exclude-module PySide6.QtOpenGL `
-    --exclude-module PySide6.QtOpenGLWidgets `
-    --exclude-module PySide6.QtTest `
-    --exclude-module PySide6.QtPrintSupport `
-    --exclude-module PySide6.QtPdf `
-    --exclude-module PySide6.QtPdfWidgets `
-    --exclude-module PySide6.QtQml `
-    --exclude-module PySide6.QtQuick `
-    --exclude-module PySide6.QtQuickWidgets `
-    --exclude-module PySide6.QtDesigner `
-    --exclude-module PySide6.QtHelp `
-    --exclude-module PySide6.QtMultimedia `
-    --exclude-module PySide6.QtMultimediaWidgets `
-    --exclude-module PySide6.QtSpatialAudio `
-    --exclude-module PySide6.QtSensors `
-    --exclude-module PySide6.QtPositioning `
-    --exclude-module PySide6.QtBluetooth `
-    --exclude-module PySide6.QtNfc `
-    --exclude-module PySide6.QtSerialPort `
-    --exclude-module PySide6.QtWebSockets `
-    --exclude-module PySide6.QtWebChannel `
-    --exclude-module tkinter `
-    --exclude-module unittest `
-    --exclude-module pydoc `
-    --exclude-module xmlrpc `
-    --exclude-module test `
-    --exclude-module sqlite3 `
-    --exclude-module lib2to3 `
-    --exclude-module curses `
-    --exclude-module turtle `
     run_vitarg.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
-
-# Strip unused Qt translations and extra plugin files to save disk space
-$trans = Join-Path $root "dist\Vitarg\PySide6\translations"
-if (Test-Path $trans) { Remove-Item -Recurse -Force $trans -ErrorAction SilentlyContinue }
-
-$imgPlugins = Join-Path $root "dist\Vitarg\PySide6\plugins\imageformats"
-if (Test-Path $imgPlugins) {
-    Get-ChildItem -Path $imgPlugins -File | Where-Object { $_.Name -notmatch "^(qjpeg|qico|qsvg)\.dll$" } | Remove-Item -Force -ErrorAction SilentlyContinue
-}
 
 Write-Host "=== Self-test ==="
 $exe = Join-Path $root "dist\Vitarg\Vitarg.exe"
