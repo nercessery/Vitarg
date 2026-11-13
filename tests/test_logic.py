@@ -216,10 +216,37 @@ class NewFeaturesTests(unittest.TestCase):
         # Literal name
         res_lit = format_rename(src, "custom_vacation", ".webp", index=1)
         self.assertEqual(res_lit, "custom_vacation.webp")
+        # Strip conflicting extension when user types old ext
+        res_ext = format_rename(src, "custom_vacation.png", ".jpg", index=1)
+        self.assertEqual(res_ext, "custom_vacation.jpg")
         # Apply rename on existing file
         new_paths = apply_custom_rename([str(src)], "final_photo")
         self.assertEqual(Path(new_paths[0]).name, "final_photo.png")
         self.assertTrue(Path(new_paths[0]).exists())
+        # Renaming to same name does not fail or error
+        same_paths = apply_custom_rename(new_paths, "final_photo")
+        self.assertEqual(same_paths, new_paths)
+
+    def test_job_window_accepts_custom_name(self):
+        try:
+            import PySide6
+            import inspect
+            from vitarg.jobs import JobWindow
+            sig = inspect.signature(JobWindow.__init__)
+            self.assertIn("custom_name", sig.parameters)
+        except ImportError:
+            import ast
+            p = Path(__file__).resolve().parent.parent / "vitarg" / "jobs.py"
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+            found = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and node.name == "JobWindow":
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                            arg_names = [a.arg for a in item.args.args]
+                            self.assertIn("custom_name", arg_names)
+                            found = True
+            self.assertTrue(found)
 
     def test_estimator_size_and_quality(self):
         from vitarg.estimator import format_size, estimate_conversion

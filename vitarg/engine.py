@@ -760,7 +760,7 @@ def convert(src, target: str, settings, progress: Progress = _noop,
         published = ws.publish()
         if custom_name and custom_name.strip():
             from .rename import apply_custom_rename
-            published = [Path(p) for p in apply_custom_rename([str(p) for p in published], custom_name)]
+            published = [Path(p) for p in apply_custom_rename([str(p) for p in published], custom_name, start_index=index)]
         return published
 
 

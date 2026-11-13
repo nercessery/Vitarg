@@ -6,11 +6,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QBrush
 from PySide6.QtWidgets import (QLabel, QPushButton, QTextEdit, QWidget, QHBoxLayout,
-                               QVBoxLayout, QLineEdit)
+                               QVBoxLayout)
 
 from .engine import Cancelled
 from .estimator import estimate_conversion, format_size
-from .rename import apply_custom_rename
 from .theme import Panel, PURPLE
 from .undo import undo_manager, notify_explorer
 
@@ -77,10 +76,12 @@ class Bar(QWidget):
 class JobWindow(Panel):
     job_done = Signal(object)      # not 'finished': that name belongs to QDialog
 
-    def __init__(self, title: str, subtitle: str, fn, sources: list[str] = None, target_or_tool: str = ""):
+    def __init__(self, title: str, subtitle: str, fn, sources: list[str] = None,
+                 target_or_tool: str = "", custom_name: str = ""):
         super().__init__(title, 420)
         self.sources = [str(Path(s)) for s in (sources or [])]
         self.target = target_or_tool
+        self.custom_name = custom_name
         self.outputs: list[str] = []
         self._auto_close_timer = None
         self._countdown = 8
@@ -111,36 +112,18 @@ class JobWindow(Panel):
         self.bar = Bar()
         self.body.addWidget(self.bar)
 
-        # 2. Auto Rename / Custom Name Input Field
+        # 2. Show chosen output name (read-only info badge, rename already handled by engine/tools)
         self.rename_container = QWidget()
         ren_lay = QVBoxLayout(self.rename_container)
         ren_lay.setContentsMargins(0, 4, 0, 4)
         ren_lay.setSpacing(4)
-
-        ren_header = QLabel("🏷️ Output Name (Optional):")
-        ren_header.setStyleSheet("color: #A0A0AB; font-size: 11px; font-weight: bold;")
-        ren_lay.addWidget(ren_header)
-
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Original name (or type custom / template)...")
-        self.name_input.setStyleSheet(
-            "background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.15); "
-            "border-radius: 6px; padding: 4px 8px; color: #FFFFFF;"
-        )
-        ren_lay.addWidget(self.name_input)
-
-        # Template quick buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
-        for lbl, tag in (("+ Date", "{name}_{date}"), ("+ 01", "{name}_{num}"), ("-vitarg", "{name}-vitarg")):
-            b = QPushButton(lbl)
-            b.setFixedHeight(22)
-            b.setStyleSheet("background: rgba(255, 255, 255, 0.08); font-size: 10px; padding: 2px 6px; border-radius: 4px;")
-            b.clicked.connect(lambda _=False, t=tag: self._append_tag(t))
-            btn_row.addWidget(b)
-        btn_row.addStretch(1)
-        ren_lay.addLayout(btn_row)
+        if custom_name:
+            name_lbl = QLabel(f"🏷️ Output name: <b>{custom_name}</b>")
+            name_lbl.setStyleSheet("color: #A0A0AB; font-size: 11px;")
+            ren_lay.addWidget(name_lbl)
         self.body.addWidget(self.rename_container)
+        if not custom_name:
+            self.rename_container.hide()
 
         # Worker initialization
         self.err = None
@@ -148,9 +131,6 @@ class JobWindow(Panel):
         self.worker.progress.connect(lambda v: self.bar.set_value(v if v > 0 else -1.0))
         self.worker.done.connect(self._done)
         self.worker.crashed.connect(lambda m: self._fail([("Unexpected error", m)]))
-
-    def _append_tag(self, tag: str):
-        self.name_input.setText(tag)
 
     def start(self):
         self.show()
@@ -160,11 +140,6 @@ class JobWindow(Panel):
         if errs:
             self._fail(errs, bool(outs))
             return
-
-        # Apply Auto Rename if specified
-        custom = self.name_input.text().strip()
-        if custom and outs:
-            outs = apply_custom_rename(outs, custom)
 
         self.outputs = list(outs)
         self.bar.set_value(1.0)

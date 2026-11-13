@@ -129,6 +129,7 @@ class FormDialog(Panel):
                 "background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.15); "
                 "border-radius: 6px; padding: 4px 8px; color: #FFFFFF;"
             )
+            self.rename_edit.returnPressed.connect(self.accept)
             rb_lay.addWidget(self.rename_edit)
 
             # Quick template buttons
@@ -409,6 +410,7 @@ class ActionConfirmDialog(Panel):
             "border-radius: 6px; padding: 6px 10px; color: #FFFFFF; font-size: 13px;"
         )
         self.name_edit.selectAll()
+        self.name_edit.returnPressed.connect(self.accept)
         r_lay.addWidget(self.name_edit)
 
         # Template buttons
