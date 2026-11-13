@@ -46,12 +46,4 @@ foreach ($f in "ffmpeg.exe", "ffprobe.exe", "pandoc.exe") {
     if (-not (Test-Path "$tools\$f")) { throw "Tool missing after download: $f" }
 }
 
-# Optimize: Compress large binaries with UPX if available (saves ~300 MB)
-$upx = (Get-Command upx -ErrorAction SilentlyContinue).Source
-if ($upx) {
-    Write-Host "Optimizing tools with UPX..."
-    foreach ($f in "ffmpeg.exe", "ffprobe.exe", "pandoc.exe") {
-        & $upx --best -q "$tools\$f" 2>&1 | Out-Null
-    }
-}
 Write-Host "Tools ready in $tools"

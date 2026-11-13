@@ -19,8 +19,14 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install Inno Setup & UPX
-        run: choco install innosetup upx -y --no-progress
+      - name: Cache External Tools (FFmpeg, Pandoc)
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: vitarg-tools-${{ runner.os }}-v1
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
 
       - name: Build Installer
         shell: pwsh
