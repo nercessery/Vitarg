@@ -123,6 +123,7 @@ class SettingsDialog(Panel):
         # ---------------- general
         g = QWidget(); gl = QVBoxLayout(g)
         self.enabled = QCheckBox("Vitarg is active (watch for drags)"); self.enabled.setChecked(settings.enabled)
+        self.prompt_rename = QCheckBox("Prompt to edit file name before converting"); self.prompt_rename.setChecked(settings.prompt_rename)
         self.sound = QCheckBox("Play a sound when a wheel option is highlighted"); self.sound.setChecked(settings.sound)
         self.login = QCheckBox("Start Vitarg when I sign in to Windows"); self.login.setChecked(settings.launch_at_login)
         self.auto_upd = QCheckBox("Automatically check for updates from GitHub"); self.auto_upd.setChecked(settings.auto_update)
@@ -136,7 +137,7 @@ class SettingsDialog(Panel):
         self.btn_undo = QPushButton("↩ Undo Last Operation")
         self.btn_undo.setStyleSheet("background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); color: #FCA5A5; font-weight: bold;")
         self.btn_undo.clicked.connect(self._do_undo)
-        for w in (self.enabled, self.sound, self.login, self.auto_upd, self.btn_shortcut, self.btn_undo, self.btn_update, self.lbl_update_status,
+        for w in (self.enabled, self.prompt_rename, self.sound, self.login, self.auto_upd, self.btn_shortcut, self.btn_undo, self.btn_update, self.lbl_update_status,
                   QLabel("Glass opacity (left = more see-through, applies instantly)"), self.opacity):
             gl.addWidget(w)
         gl.addStretch(1)
@@ -321,7 +322,7 @@ class SettingsDialog(Panel):
         self.conv.set_keys(d.conv_trigger); self.tools.set_keys(d.tools_trigger)
         self.r_src.setChecked(True); self.folder.setText(""); self.over.setCurrentIndex(0)
         self.jq.setValue(d.jpg_quality); self.wq.setValue(d.webp_quality); self.crf.setValue(d.video_crf); self.abr.setValue(d.audio_bitrate_k)
-        self.preset.setCurrentText(d.compress_preset); self.enabled.setChecked(True); self.sound.setChecked(True); self.login.setChecked(False)
+        self.preset.setCurrentText(d.compress_preset); self.enabled.setChecked(True); self.prompt_rename.setChecked(True); self.sound.setChecked(True); self.login.setChecked(False)
         self.auto_upd.setChecked(True)
         self.s.reset_appearance(); self._apply_appearance()
 
@@ -332,7 +333,7 @@ class SettingsDialog(Panel):
         s.output_folder = self.folder.text().strip()
         s.overwrite = self.over.currentData()
         s.jpg_quality, s.webp_quality, s.video_crf, s.audio_bitrate_k = self.jq.value(), self.wq.value(), self.crf.value(), self.abr.value()
-        s.compress_preset, s.enabled, s.sound = self.preset.currentText(), self.enabled.isChecked(), self.sound.isChecked()
+        s.compress_preset, s.enabled, s.prompt_rename, s.sound = self.preset.currentText(), self.enabled.isChecked(), self.prompt_rename.isChecked(), self.sound.isChecked()
         s.auto_update = self.auto_upd.isChecked()
         if s.launch_at_login != self.login.isChecked():
             s.launch_at_login = self.login.isChecked()

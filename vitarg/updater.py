@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 
 GITHUB_REPOS = ["nercessery/Vitarg"]
-USER_AGENT = "Vitarg-App/1.0.1"
+USER_AGENT = "Vitarg-App/1.0.2"
 
 try:
     from PySide6.QtCore import Qt, QThread, Signal, QTimer

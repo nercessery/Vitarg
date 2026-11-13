@@ -110,6 +110,40 @@ class FormDialog(Panel):
                     self.widgets["height"].setEnabled(not is_scale)
             self.widgets["mode"].currentTextChanged.connect(_on_mode_change)
             _on_mode_change(self.widgets["mode"].currentText())
+
+        # Output Name section
+        self.rename_edit = None
+        if self.paths:
+            ren_box = QWidget()
+            rb_lay = QVBoxLayout(ren_box)
+            rb_lay.setContentsMargins(0, 6, 0, 4)
+            rb_lay.setSpacing(4)
+            rb_lbl = QLabel("🏷️ Output File Name (Optional):")
+            rb_lbl.setStyleSheet("color: #A0A0AB; font-size: 11px; font-weight: bold;")
+            rb_lay.addWidget(rb_lbl)
+
+            p0 = Path(self.paths[0])
+            def_name = p0.stem if len(self.paths) == 1 else "{name}"
+            self.rename_edit = QLineEdit(def_name)
+            self.rename_edit.setStyleSheet(
+                "background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.15); "
+                "border-radius: 6px; padding: 4px 8px; color: #FFFFFF;"
+            )
+            rb_lay.addWidget(self.rename_edit)
+
+            # Quick template buttons
+            t_row = QHBoxLayout()
+            t_row.setSpacing(4)
+            for lbl, tag in (("+ Date", f"{def_name}_{{date}}"), ("+ 01", f"{def_name}_{{num}}"), ("-vitarg", f"{def_name}-vitarg"), ("Original", def_name)):
+                b = QPushButton(lbl)
+                b.setFixedHeight(22)
+                b.setStyleSheet("background: rgba(255, 255, 255, 0.08); font-size: 10px; padding: 2px 6px; border-radius: 4px;")
+                b.clicked.connect(lambda _=False, t=tag: self.rename_edit.setText(t))
+                t_row.addWidget(b)
+            t_row.addStretch(1)
+            rb_lay.addLayout(t_row)
+            self.body.addWidget(ren_box)
+
         row = QHBoxLayout()
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
         ok = QPushButton("Apply"); ok.setObjectName("primary"); ok.clicked.connect(self.accept)
@@ -154,6 +188,8 @@ class FormDialog(Panel):
         out = {}
         for k, w in self.widgets.items():
             out[k] = (w.currentText() if isinstance(w, QComboBox) else w.value() if hasattr(w, "value") else w.property("hex"))
+        if getattr(self, "rename_edit", None) and self.rename_edit.text().strip():
+            out["custom_name"] = self.rename_edit.text().strip()
         return out
 
 
@@ -308,3 +344,110 @@ class CropDialog(Panel):
 
     def box(self):
         return tuple(round(v) for v in self.canvas.sel)
+
+
+# ---------------------------------------------------------------------------- action confirm / rename
+class ActionConfirmDialog(Panel):
+    """Pre-action confirmation and file rename dialog: let user edit file name before converting."""
+
+    def __init__(self, title: str, paths: list[str], target_or_tool: str, is_conv: bool = True, parent=None):
+        super().__init__(f"Vitarg: {title}", 480, parent)
+        from pathlib import Path
+        self.paths = [Path(p) for p in paths]
+        self.target = target_or_tool
+        self.is_conv = is_conv
+        p0 = self.paths[0]
+        n_files = len(self.paths)
+
+        # 1. Source file header
+        if n_files == 1:
+            from .estimator import format_size
+            try:
+                sz = format_size(p0.stat().st_size)
+            except Exception:
+                sz = ""
+            src_lbl = QLabel(f"📄 <b>{p0.name}</b> {f'({sz})' if sz else ''}")
+        else:
+            names = ", ".join(p.name for p in self.paths[:3])
+            if n_files > 3:
+                names += f"... (+{n_files - 3} more)"
+            src_lbl = QLabel(f"📁 <b>{n_files} files selected:</b> {names}")
+        src_lbl.setWordWrap(True)
+        self.body.addWidget(src_lbl)
+
+        # 2. Conversion / Action Preview badge
+        if is_conv:
+            try:
+                from .estimator import estimate_conversion
+                est = estimate_conversion(p0, target_or_tool)
+                prev_badge = QLabel(f"📊 {est['summary']}")
+                prev_badge.setStyleSheet(
+                    "background: rgba(124, 58, 237, 0.15); border: 1px solid rgba(124, 58, 237, 0.35); "
+                    "border-radius: 6px; padding: 6px 10px; color: #E0E7FF; font-size: 11px;"
+                )
+                prev_badge.setWordWrap(True)
+                self.body.addWidget(prev_badge)
+            except Exception:
+                pass
+
+        # 3. Rename Section
+        ren_box = QWidget()
+        r_lay = QVBoxLayout(ren_box)
+        r_lay.setContentsMargins(0, 6, 0, 6)
+        r_lay.setSpacing(4)
+
+        r_title = QLabel("🏷️ Output File Name (Edit before converting):")
+        r_title.setStyleSheet("color: #7C3AED; font-weight: bold; font-size: 12px;")
+        r_lay.addWidget(r_title)
+
+        ext = f".{target_or_tool.lower().lstrip('.')}" if is_conv else p0.suffix
+        default_name = p0.stem if n_files == 1 else "{name}"
+
+        self.name_edit = QLineEdit(default_name)
+        self.name_edit.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.4); border: 1.5px solid #7C3AED; "
+            "border-radius: 6px; padding: 6px 10px; color: #FFFFFF; font-size: 13px;"
+        )
+        self.name_edit.selectAll()
+        r_lay.addWidget(self.name_edit)
+
+        # Template buttons
+        t_row = QHBoxLayout()
+        t_row.setSpacing(6)
+        for label, pattern in (
+            ("Original", default_name),
+            ("+ Date", f"{default_name}_{{date}}"),
+            ("+ 01", f"{default_name}_{{num}}"),
+            ("-vitarg", f"{default_name}-vitarg")
+        ):
+            b = QPushButton(label)
+            b.setFixedHeight(24)
+            b.setStyleSheet("background: rgba(255, 255, 255, 0.08); font-size: 11px; padding: 2px 8px; border-radius: 4px;")
+            b.clicked.connect(lambda _=False, p=pattern: self.name_edit.setText(p))
+            t_row.addWidget(b)
+        t_row.addStretch(1)
+        r_lay.addLayout(t_row)
+
+        hint = QLabel(f"Extension <b>{ext}</b> will be preserved automatically. Press Enter to proceed.")
+        hint.setObjectName("hint")
+        r_lay.addWidget(hint)
+        self.body.addWidget(ren_box)
+
+        # 4. Action Buttons
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel (Esc)")
+        cancel_btn.clicked.connect(self.reject)
+
+        action_txt = f"Convert to {target_or_tool.upper()} ⚡" if is_conv else "Start Action ⚡"
+        ok_btn = QPushButton(action_txt)
+        ok_btn.setObjectName("primary")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(ok_btn)
+        self.body.addLayout(btn_row)
+
+    def output_name(self) -> str:
+        return self.name_edit.text().strip()

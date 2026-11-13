@@ -732,7 +732,8 @@ def convert_archive(src: Path, sf: str, target: str, ws: Workspace) -> None:
 
 # ------------------------------------------------------------------ public API
 def convert(src, target: str, settings, progress: Progress = _noop,
-            cancel: Optional[threading.Event] = None) -> list[Path]:
+            cancel: Optional[threading.Event] = None,
+            custom_name: str = "", index: int = 1) -> list[Path]:
     src = Path(src)
     if not src.is_file():
         raise ConversionError(f"Source file not found: {src}")
@@ -756,17 +757,23 @@ def convert(src, target: str, settings, progress: Progress = _noop,
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         progress(1.0)
-        return ws.publish()
+        published = ws.publish()
+        if custom_name and custom_name.strip():
+            from .rename import apply_custom_rename
+            published = [Path(p) for p in apply_custom_rename([str(p) for p in published], custom_name)]
+        return published
 
 
 def convert_batch(sources, target: str, settings, progress: Progress = _noop,
-                  cancel: Optional[threading.Event] = None):
+                  cancel: Optional[threading.Event] = None,
+                  custom_name: str = ""):
     """Convert several files. Returns (outputs, errors[(source, message)])."""
     outs, errs = [], []
     n = len(sources)
     for i, s in enumerate(sources):
         try:
-            outs += convert(s, target, settings, lambda f, i=i: progress((i + f) / n), cancel)
+            outs += convert(s, target, settings, lambda f, i=i: progress((i + f) / n), cancel,
+                            custom_name=custom_name, index=i+1)
         except Cancelled:
             raise
         except ConversionError as e:

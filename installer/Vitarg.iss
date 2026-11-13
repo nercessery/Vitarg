@@ -1,6 +1,6 @@
 [Setup]
 AppName=Vitarg
-AppVersion=1.0.1
+AppVersion=1.0.2
 DefaultDirName={autopf}\Vitarg
 DefaultGroupName=Vitarg
 OutputDir=..\dist

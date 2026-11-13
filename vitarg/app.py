@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QBrush, QRa
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import engine, tools, theme, __version__
-from .dialogs import CropDialog, FormDialog
+from .dialogs import CropDialog, FormDialog, ActionConfirmDialog
 from .inspector import InspectorDialog
 from .jobs import JobWindow
 from .monitor import DragMonitor
@@ -114,10 +114,20 @@ class Controller:
     # -------------------------------------------------------------
     def on_choice(self, kind: str, ident: str, paths: list):
         paths = [str(Path(p)) for p in paths]
+        custom_name = ""
+
         if kind == "conv":
             src_fmt = "/".join(sorted({engine.fmt_of(p).upper() for p in paths}))
             title = f"Converting {src_fmt} → {ident.upper()}"
-            fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel)
+
+            if getattr(self.s, "prompt_rename", True):
+                dlg = ActionConfirmDialog(f"{src_fmt} → {ident.upper()}", paths, ident, is_conv=True)
+                dlg.show(); dlg.raise_(); dlg.activateWindow()
+                if not dlg.exec():
+                    return
+                custom_name = dlg.output_name()
+
+            fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel, custom_name=custom_name)
             target_or_tool = ident
         else:
             tool = tools.BY_ID[ident]
@@ -139,11 +149,21 @@ class Controller:
                 if not dlg.exec():
                     return
                 params = dlg.values()
+                custom_name = params.get("custom_name", "")
+            else:
+                if getattr(self.s, "prompt_rename", True):
+                    dlg = ActionConfirmDialog(tool.label.title(), paths, ident, is_conv=False)
+                    dlg.show(); dlg.raise_(); dlg.activateWindow()
+                    if not dlg.exec():
+                        return
+                    custom_name = dlg.output_name()
+                    params["custom_name"] = custom_name
+
             title = tool.label.title()
             fn = lambda prog, cancel: tools.run_tool(ident, paths, params, self.s, prog, cancel)
             target_or_tool = ident
         sub = Path(paths[0]).name if len(paths) == 1 else f"{len(paths)} files"
-        win = JobWindow(title, sub, fn, sources=paths, target_or_tool=target_or_tool)
+        win = JobWindow(title, sub, fn, sources=paths, target_or_tool=target_or_tool, custom_name=custom_name)
         self.jobs.add(win)
         win.job_done.connect(lambda w: (self.jobs.discard(w), w.deleteLater()))
         win.start()

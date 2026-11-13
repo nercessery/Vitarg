@@ -592,7 +592,11 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
             elif tool_id == "join":
                 join_videos(sources, ws, progress, cancel)
             progress(1.0)
-            return ws.publish(), []
+            published = ws.publish()
+            if params.get("custom_name"):
+                from .rename import apply_custom_rename
+                published = [Path(p) for p in apply_custom_rename([str(p) for p in published], params["custom_name"])]
+            return published, []
     n = len(sources)
     for i, s in enumerate(sources):
         sub = lambda f, i=i: progress((i + f) / n)
@@ -646,6 +650,9 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
         except Exception as e:
             errs.append((s.name, f"{type(e).__name__}: {e}"))
         progress((i + 1) / n)
+    if params.get("custom_name"):
+        from .rename import apply_custom_rename
+        outs = [Path(p) for p in apply_custom_rename([str(p) for p in outs], params["custom_name"])]
     return outs, errs
 
 

@@ -40,7 +40,7 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 
 ### ⚡ Smart Productivity Tools
 - **Undo / Rollback (Ctrl+Z)** — Revert the last operation with one click from the completion dialog, tray menu, or Settings. Safely deletes generated files and restores any backed-up originals.
-- **Auto Rename & Custom Naming** — Set custom filenames or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) directly during operations.
+- **Pre-Action Rename & Custom Naming** — Review and customize output file names or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) before converting or running tools, with live output preview and automatic extension handling.
 - **Conversion Preview & Size Estimator** — Real-time estimation of output file size and quality ratio before and during processing.
 
 ---

@@ -97,6 +97,7 @@ class Settings:
     launch_at_login: bool = False
     enabled: bool = True
     auto_update: bool = True             # automatically check for updates on startup
+    prompt_rename: bool = True           # prompt to review/edit file name before running
 
     # ---- persistence -------------------------------------------------
     @staticmethod
