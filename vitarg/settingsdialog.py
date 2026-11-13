@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGroupBox, QHB
 
 from . import keys, settings as S, theme, __version__
 from .theme import Panel
-from .updater import check_github_update, UpdateDialog
+from .updater import check_github_update, UpdateDialog, UpdateCheckThread
 
 
 class TriggerEditor(QGroupBox):
@@ -300,20 +300,21 @@ class SettingsDialog(Panel):
     def _check_updates(self):
         self.btn_update.setEnabled(False)
         self.lbl_update_status.setText("Checking GitHub for updates...")
-        import threading
-        def worker():
-            rel = check_github_update(__version__)
-            QTimer.singleShot(0, lambda: self._on_update_result(rel))
-        threading.Thread(target=worker, daemon=True).start()
+        self.lbl_update_status.setStyleSheet("color: #7C3AED;")
+        self._check_thread = UpdateCheckThread(__version__, self)
+        self._check_thread.finished_check.connect(self._on_update_result)
+        self._check_thread.start()
 
-    def _on_update_result(self, rel):
+    def _on_update_result(self, rel, status_msg=""):
         self.btn_update.setEnabled(True)
         if rel:
             self.lbl_update_status.setText(f"Update available: {rel['version']}!")
+            self.lbl_update_status.setStyleSheet("color: #34D399; font-weight: bold;")
             dlg = UpdateDialog(rel, __version__, self)
             dlg.exec()
         else:
-            self.lbl_update_status.setText(f"You have the latest version (v{__version__}).")
+            self.lbl_update_status.setText(f"{status_msg} (Current: v{__version__})")
+            self.lbl_update_status.setStyleSheet("color: #A0A0AB;")
 
     def _reset_all(self):
         d = S.Settings()

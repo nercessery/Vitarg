@@ -17,8 +17,14 @@ try:
     _HAS_QT = True
 except ImportError:
     _HAS_QT = False
-    class QThread: pass
-    def Signal(*a, **k): return None
+    class QThread:
+        def __init__(self, parent=None): pass
+        def start(self): pass
+    def Signal(*a, **k):
+        class _Sig:
+            def connect(self, fn): pass
+            def emit(self, *a, **k): pass
+        return _Sig()
     class Panel: pass
 
 
@@ -37,50 +43,97 @@ def parse_semver(tag: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def check_github_update(current_version: str) -> Optional[dict]:
-    """Check GitHub API for a newer release. Returns release metadata dict or None."""
+def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], str]:
+    """Check GitHub API for a newer release. Returns (release_dict or None, status_message)."""
     cur_v = parse_semver(current_version)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/vnd.github+json",
     }
+    last_err = ""
     for repo in GITHUB_REPOS:
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    tag = data.get("tag_name", "")
-                    remote_v = parse_semver(tag)
-                    if remote_v > cur_v:
-                        # Find setup executable asset
-                        assets = data.get("assets", [])
-                        setup_asset = None
-                        for a in assets:
-                            name = a.get("name", "").lower()
-                            if ("setup" in name or "vitarg" in name) and name.endswith(".exe"):
-                                setup_asset = a
-                                break
-                        if not setup_asset and assets:
+        # Check /releases/latest first, fallback to /releases list
+        endpoints = [
+            f"https://api.github.com/repos/{repo}/releases/latest",
+            f"https://api.github.com/repos/{repo}/releases",
+        ]
+        for url in endpoints:
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        if isinstance(raw, list):
+                            if not raw:
+                                last_err = f"No releases published yet on {repo}."
+                                continue
+                            data = raw[0]
+                        else:
+                            data = raw
+
+                        tag = data.get("tag_name", "")
+                        remote_v = parse_semver(tag)
+                        if remote_v > cur_v:
+                            assets = data.get("assets", [])
+                            setup_asset = None
                             for a in assets:
-                                if a.get("name", "").lower().endswith(".exe"):
+                                name = a.get("name", "").lower()
+                                if ("setup" in name or "vitarg" in name) and name.endswith(".exe"):
                                     setup_asset = a
                                     break
-                        if setup_asset:
-                            return {
-                                "repo": repo,
-                                "version": tag,
-                                "name": data.get("name") or f"Vitarg {tag}",
-                                "notes": data.get("body", "").strip(),
-                                "download_url": setup_asset.get("browser_download_url"),
-                                "asset_name": setup_asset.get("name"),
-                                "size": setup_asset.get("size", 0),
-                            }
-                    return None
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
-            continue
-    return None
+                            if not setup_asset and assets:
+                                for a in assets:
+                                    if a.get("name", "").lower().endswith(".exe"):
+                                        setup_asset = a
+                                        break
+                            if setup_asset:
+                                return {
+                                    "repo": repo,
+                                    "version": tag,
+                                    "name": data.get("name") or f"Vitarg {tag}",
+                                    "notes": data.get("body", "").strip(),
+                                    "download_url": setup_asset.get("browser_download_url"),
+                                    "asset_name": setup_asset.get("name"),
+                                    "size": setup_asset.get("size", 0),
+                                }, f"New release {tag} available!"
+                            else:
+                                return None, f"Release {tag} found, but installer asset (.exe) is still compiling."
+                        else:
+                            return None, f"You are up to date (Latest release: {tag})."
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    last_err = f"No public releases found yet on {repo}."
+                elif e.code == 403:
+                    last_err = "GitHub API rate limit reached. Please wait a few minutes."
+                else:
+                    last_err = f"GitHub API error {e.code}: {e.reason}"
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                last_err = f"Network error checking GitHub: {e}"
+            except Exception as e:
+                last_err = f"Error checking GitHub: {e}"
+
+    return None, (last_err or "No releases found on GitHub.")
+
+
+def check_github_update(current_version: str) -> Optional[dict]:
+    """Backward-compatible helper returning release dict or None."""
+    rel, _ = check_github_update_detailed(current_version)
+    return rel
+
+
+class UpdateCheckThread(QThread):
+    finished_check = Signal(object, str)
+
+    def __init__(self, current_version: str, parent=None):
+        super().__init__(parent)
+        self.current_version = current_version
+
+    def run(self):
+        try:
+            rel, msg = check_github_update_detailed(self.current_version)
+            self.finished_check.emit(rel, msg)
+        except Exception as e:
+            self.finished_check.emit(None, f"Check failed: {e}")
 
 
 class DownloadThread(QThread):

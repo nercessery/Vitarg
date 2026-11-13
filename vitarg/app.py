@@ -16,7 +16,7 @@ from .monitor import DragMonitor
 from .settings import Settings, label
 from .settingsdialog import SettingsDialog
 from .wheel import Wheel
-from .updater import check_github_update, UpdateDialog
+from .updater import check_github_update, UpdateDialog, UpdateCheckThread
 from .undo import undo_manager
 
 
@@ -87,19 +87,18 @@ class Controller:
         self.monitor.stop(); self.wheel.dismiss(); self.tray.hide(); self.app.quit()
 
     def check_for_updates(self, interactive: bool = True):
-        import threading
-        def worker():
-            rel = check_github_update(__version__)
-            QTimer.singleShot(0, lambda: self._on_update_result(rel, interactive))
-        threading.Thread(target=worker, daemon=True).start()
+        self._upd_thread = UpdateCheckThread(__version__, self.app)
+        self._upd_thread.finished_check.connect(lambda rel, err: self._on_update_result(rel, interactive, err))
+        self._upd_thread.start()
 
-    def _on_update_result(self, rel: Optional[dict], interactive: bool):
+    def _on_update_result(self, rel: Optional[dict], interactive: bool, status_msg: str = ""):
         if rel:
             dlg = UpdateDialog(rel, __version__)
             dlg.show(); dlg.raise_(); dlg.activateWindow()
             dlg.exec()
         elif interactive:
-            QMessageBox.information(None, "Vitarg", f"You are running the latest version of Vitarg (v{__version__}).")
+            msg = status_msg or f"You are running the latest version of Vitarg (v{__version__})."
+            QMessageBox.information(None, "Vitarg", msg)
 
     def _tray_undo(self):
         if not undo_manager.can_undo():
