@@ -130,7 +130,7 @@ def selftest() -> int:
     report = Path(tempfile.gettempdir()) / "vitarg-selftest.txt"     # windowed exe has no console
     missing = [t for t in ("ffmpeg", "ffprobe", "pandoc") if not engine.find_tool(t)]
     try:
-        import fitz, docx, PIL, PySide6, win32com.client, py7zr  # noqa
+        import fitz, docx, PIL, PySide6, win32com.client, py7zr, urllib.request  # noqa
     except ImportError as e:
         report.write_text(f"MISSING MODULE: {e}")
         return 3

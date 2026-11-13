@@ -102,7 +102,6 @@ Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
     --exclude-module tkinter `
     --exclude-module unittest `
     --exclude-module pydoc `
-    --exclude-module email `
     --exclude-module xmlrpc `
     --exclude-module test `
     --exclude-module sqlite3 `
@@ -123,7 +122,13 @@ if (Test-Path $imgPlugins) {
 
 Write-Host "=== Self-test ==="
 $exe = Join-Path $root "dist\Vitarg\Vitarg.exe"
-$p = Start-Process $exe -ArgumentList "--selftest" -Wait -PassThru
+$p = Start-Process $exe -ArgumentList "--selftest" -PassThru
+$exited = $p.WaitForExit(30000)
+if (-not $exited) {
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    $report = Get-Content (Join-Path $env:TEMP "vitarg-selftest.txt") -ErrorAction SilentlyContinue
+    throw "Self-test timed out after 30 seconds! Report: $report"
+}
 $report = Get-Content (Join-Path $env:TEMP "vitarg-selftest.txt") -ErrorAction SilentlyContinue
 Write-Host "Self-test exit code $($p.ExitCode): $report"
 if ($p.ExitCode -ne 0) { throw "Self-test failed" }
