@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.uv/
+
+# PyInstaller / Build
+build/
+dist/
+*.spec
+
+# Bundled binaries (downloaded during build by scripts/fetch_tools.ps1)
+tools/*.exe
+tools/licenses/
+
+# Test & runtime logs
+test-results.txt
+*.tmp
+*.log
+
+# OS & IDE
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
