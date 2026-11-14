@@ -102,7 +102,10 @@ class Settings:
     # ---- persistence -------------------------------------------------
     @staticmethod
     def path() -> Path:
-        base = os.environ.get("APPDATA") or str(Path.home() / ".config")
+        if sys.platform == "win32":
+            base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("APPDATA") or str(Path.home() / ".config")
         return Path(base) / "Vitarg" / "settings.json"
 
     @classmethod
@@ -125,8 +128,7 @@ class Settings:
         return s
 
     def save(self) -> None:
-        base = os.environ.get("APPDATA") or str(Path.home() / ".config")
-        p = Path(base) / "Vitarg" / "settings.json"
+        p = self.path()
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
@@ -155,40 +157,104 @@ class Settings:
 
 
 def set_launch_at_login(enabled: bool) -> None:
-    if sys.platform != "win32":
-        return
-    import winreg
-    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run",
-                         0, winreg.KEY_SET_VALUE)
-    try:
+    if sys.platform == "win32":
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
+        try:
+            if enabled:
+                exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
+                winreg.SetValueEx(key, "Vitarg", 0, winreg.REG_SZ, exe)
+            else:
+                try:
+                    winreg.DeleteValue(key, "Vitarg")
+                except FileNotFoundError:
+                    pass
+        finally:
+            winreg.CloseKey(key)
+    elif sys.platform.startswith("linux"):
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        autostart_dir = config_home / "autostart"
+        desktop_file = autostart_dir / "vitarg.desktop"
         if enabled:
-            exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
-            winreg.SetValueEx(key, "Vitarg", 0, winreg.REG_SZ, exe)
-        else:
+            autostart_dir.mkdir(parents=True, exist_ok=True)
+            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Vitarg\n"
+                "Comment=Vitarg File Converter & Toolkit\n"
+                f"Exec={exe}\n"
+                "Icon=vitarg\n"
+                "Terminal=false\n"
+                "Categories=Utility;\n"
+                "X-GNOME-Autostart-enabled=true\n"
+            )
+            desktop_file.write_text(content, encoding="utf-8")
             try:
-                winreg.DeleteValue(key, "Vitarg")
-            except FileNotFoundError:
+                desktop_file.chmod(0o755)
+            except OSError:
                 pass
-    finally:
-        winreg.CloseKey(key)
+        else:
+            if desktop_file.exists():
+                try:
+                    desktop_file.unlink()
+                except OSError:
+                    pass
 
 
 def create_desktop_shortcut() -> bool:
-    if sys.platform != "win32":
-        return False
-    try:
-        import win32com.client
-        shell = win32com.client.Dispatch("WScript.Shell")
-        desktop = shell.SpecialFolders("Desktop")
-        shortcut_path = os.path.join(desktop, "Vitarg.lnk")
-        shortcut = shell.CreateShortCut(shortcut_path)
-        shortcut.TargetPath = sys.executable
-        if not getattr(sys, "frozen", False):
-            shortcut.Arguments = "-m vitarg"
-        shortcut.WorkingDirectory = os.path.dirname(sys.executable)
-        shortcut.IconLocation = sys.executable
-        shortcut.Description = "Vitarg File Converter & Toolkit"
-        shortcut.Save()
-        return True
-    except Exception:
-        return False
+    if sys.platform == "win32":
+        try:
+            import win32com.client
+            shell = win32com.client.Dispatch("WScript.Shell")
+            desktop = shell.SpecialFolders("Desktop")
+            shortcut_path = os.path.join(desktop, "Vitarg.lnk")
+            shortcut = shell.CreateShortCut(shortcut_path)
+            shortcut.TargetPath = sys.executable
+            if not getattr(sys, "frozen", False):
+                shortcut.Arguments = "-m vitarg"
+            shortcut.WorkingDirectory = os.path.dirname(sys.executable)
+            shortcut.IconLocation = sys.executable
+            shortcut.Description = "Vitarg File Converter & Toolkit"
+            shortcut.Save()
+            return True
+        except Exception:
+            return False
+    elif sys.platform.startswith("linux"):
+        try:
+            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Vitarg\n"
+                "Comment=Vitarg File Converter & Toolkit\n"
+                f"Exec={exe}\n"
+                "Icon=vitarg\n"
+                "Terminal=false\n"
+                "Categories=Utility;\n"
+            )
+            created = False
+            desktop_dir = Path.home() / "Desktop"
+            if desktop_dir.exists():
+                desk_file = desktop_dir / "vitarg.desktop"
+                desk_file.write_text(content, encoding="utf-8")
+                try:
+                    desk_file.chmod(0o755)
+                except OSError:
+                    pass
+                created = True
+            data_home = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+            apps_dir = data_home / "applications"
+            apps_dir.mkdir(parents=True, exist_ok=True)
+            app_file = apps_dir / "vitarg.desktop"
+            app_file.write_text(content, encoding="utf-8")
+            try:
+                app_file.chmod(0o755)
+            except OSError:
+                pass
+            created = True
+            return created
+        except Exception:
+            return False
+    return False

@@ -271,5 +271,96 @@ class NewFeaturesTests(unittest.TestCase):
         self.assertGreater(len(info["sha256"]), 10)
 
 
+class LinuxPlatformTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_settings_path_linux_xdg(self):
+        import os
+        from unittest.mock import patch
+        from vitarg import settings as S
+        with patch("sys.platform", "linux"), patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.tmp), "APPDATA": ""}):
+            p = S.Settings.path()
+            self.assertEqual(p, self.tmp / "Vitarg" / "settings.json")
+
+    def test_settings_path_linux_fallback(self):
+        import os
+        from unittest.mock import patch
+        from vitarg import settings as S
+        with patch("sys.platform", "linux"), patch.dict(os.environ, {}, clear=True), patch("pathlib.Path.home", return_value=self.tmp):
+            p = S.Settings.path()
+            self.assertEqual(p, self.tmp / ".config" / "Vitarg" / "settings.json")
+
+    def test_linux_autostart_and_shortcut(self):
+        import os
+        from unittest.mock import patch
+        from vitarg import settings as S
+        config_dir = self.tmp / ".config"
+        desktop_dir = self.tmp / "Desktop"
+        desktop_dir.mkdir(parents=True, exist_ok=True)
+        local_share = self.tmp / ".local" / "share"
+
+        with patch("sys.platform", "linux"), \
+             patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_dir), "XDG_DATA_HOME": str(local_share)}), \
+             patch("pathlib.Path.home", return_value=self.tmp):
+            # Test enable autostart
+            S.set_launch_at_login(True)
+            autostart_file = config_dir / "autostart" / "vitarg.desktop"
+            self.assertTrue(autostart_file.exists())
+            self.assertIn("Name=Vitarg", autostart_file.read_text(encoding="utf-8"))
+
+            # Test disable autostart
+            S.set_launch_at_login(False)
+            self.assertFalse(autostart_file.exists())
+
+            # Test create desktop shortcut
+            ok = S.create_desktop_shortcut()
+            self.assertTrue(ok)
+            self.assertTrue((desktop_dir / "vitarg.desktop").exists())
+            self.assertTrue((local_share / "applications" / "vitarg.desktop").exists())
+
+    def test_folder_reveal_linux_uses_xdg_open(self):
+        try:
+            import PySide6
+            from unittest.mock import patch, MagicMock
+            with patch("sys.platform", "linux"), patch("subprocess.Popen") as mock_popen:
+                import vitarg.jobs as jobs
+                dummy_self = MagicMock()
+                dummy_self._auto_close_timer = None
+                dummy_self.outputs = [str(self.tmp / "output.png")]
+                jobs.JobWindow._open_folder(dummy_self)
+                mock_popen.assert_called_once_with(["xdg-open", str(self.tmp)])
+
+            with patch("sys.platform", "linux"), patch("subprocess.Popen") as mock_popen:
+                import vitarg.inspector as inspector
+                dummy_insp = MagicMock()
+                dummy_insp.file_path = self.tmp / "sample.txt"
+                inspector.InspectorDialog._open_folder(dummy_insp)
+                mock_popen.assert_called_once_with(["xdg-open", str(self.tmp)])
+        except ImportError:
+            for filename in ("jobs.py", "inspector.py"):
+                p = Path(__file__).resolve().parent.parent / "vitarg" / filename
+                code = p.read_text(encoding="utf-8")
+                self.assertIn("xdg-open", code)
+                self.assertIn('sys.platform == "win32"', code)
+
+    def test_monitor_inactivity_on_linux(self):
+        try:
+            import PySide6
+            from unittest.mock import patch, MagicMock
+            from vitarg import monitor
+            s = MagicMock()
+            s.enabled = True
+            with patch("sys.platform", "linux"):
+                m = monitor.DragMonitor(s)
+                m.start()
+                self.assertFalse(m.timer.isActive())
+        except ImportError:
+            p = Path(__file__).resolve().parent.parent / "vitarg" / "monitor.py"
+            code = p.read_text(encoding="utf-8")
+            self.assertIn('if sys.platform != "win32":', code)
+
+
 if __name__ == "__main__":
     unittest.main()

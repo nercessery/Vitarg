@@ -226,8 +226,10 @@ class JobWindow(Panel):
             try:
                 if sys.platform == "win32":
                     subprocess.Popen(f'explorer /select,"{target}"')
-                else:
+                elif sys.platform == "darwin":
                     subprocess.Popen(["open", str(target.parent)])
+                else:
+                    subprocess.Popen(["xdg-open", str(target.parent)])
             except Exception:
                 pass
 

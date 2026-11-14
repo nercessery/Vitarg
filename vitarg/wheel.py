@@ -49,7 +49,10 @@ class Wheel(QWidget):
         self.pop.setEasingCurve(QEasingCurve.OutBack)
         self._sound = app_dir() / "assets" / "HighlightSound.wav"
         self._font_label = QFont("Segoe UI Variable Display", 13, QFont.Bold)
-        self._font_label.setFamilies(["Segoe UI Variable Display", "Segoe UI", "Arial"])
+        self._font_label.setFamilies([
+            "Segoe UI Variable Display", "Segoe UI", "Inter", "Ubuntu",
+            "Cantarell", "Noto Sans", "DejaVu Sans", "Arial"
+        ])
         self._font_tool = QFont(self._font_label)
         self._font_tool.setPointSizeF(8.5)
         self._font_tool.setLetterSpacing(QFont.AbsoluteSpacing, 0.8)
@@ -176,11 +179,16 @@ class Wheel(QWidget):
     # showing / hiding ------------------------------------------------
     def present(self, kind: str, paths: list[str], gx: int, gy: int):
         self.set_content(kind, paths)
+        if (gx == 0 and gy == 0) or gx is None or gy is None:
+            scr = QGuiApplication.primaryScreen()
+            if scr:
+                center = scr.availableGeometry().center()
+                gx, gy = center.x(), center.y()
         scr = QGuiApplication.screenAt(QPoint(gx, gy)) or QGuiApplication.primaryScreen()
-        geom = scr.availableGeometry()
+        geom = scr.availableGeometry() if scr else QRectF(0, 0, 1920, 1080)
         x = min(max(gx - SIZE // 2, geom.left()), geom.right() - SIZE)
         y = min(max(gy - SIZE // 2, geom.top()), geom.bottom() - SIZE)
-        self.move(x, y)
+        self.move(int(x), int(y))
         if not self.isVisible():
             self.setWindowOpacity(0.0)
             self.show()
@@ -210,9 +218,19 @@ class Wheel(QWidget):
     def _set_hover(self, i: int):
         if i != self.hover:
             self.hover = i
-            if i >= 0 and self.settings.sound and sys.platform == "win32" and self._sound.exists():
-                import winsound
-                winsound.PlaySound(str(self._sound), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            if i >= 0 and self.settings.sound:
+                if sys.platform == "win32" and self._sound.exists():
+                    try:
+                        import winsound
+                        winsound.PlaySound(str(self._sound), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                    except Exception:
+                        pass
+                elif sys.platform != "win32":
+                    try:
+                        from PySide6.QtWidgets import QApplication
+                        QApplication.beep()
+                    except Exception:
+                        pass
             self.update()
 
     def dragEnterEvent(self, e):

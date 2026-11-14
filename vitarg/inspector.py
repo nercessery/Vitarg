@@ -277,7 +277,9 @@ class InspectorDialog(Panel):
         try:
             if sys.platform == "win32":
                 subprocess.Popen(f'explorer /select,"{self.file_path}"')
-            else:
+            elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(self.file_path.parent)])
+            else:
+                subprocess.Popen(["xdg-open", str(self.file_path.parent)])
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open folder: {e}")

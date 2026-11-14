@@ -1,12 +1,18 @@
 """Tray application: wires the drag monitor, wheel, dialogs and background jobs together."""
 from __future__ import annotations
-import os, sys, tempfile
+import json, os, sys, tempfile
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QLockFile, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QBrush, QRadialGradient
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtCore import QLockFile, QTimer, Qt, QPoint
+from PySide6.QtGui import (
+    QAction, QColor, QIcon, QPainter, QPixmap, QBrush, QPen,
+    QRadialGradient, QCursor, QGuiApplication
+)
+from PySide6.QtWidgets import (
+    QApplication, QMenu, QMessageBox, QSystemTrayIcon, QFileDialog, QWidget
+)
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from . import engine, tools, theme, __version__
 from .dialogs import CropDialog, FormDialog, ActionConfirmDialog
@@ -31,6 +37,85 @@ def make_icon() -> QIcon:
     return QIcon(pm)
 
 
+class DropTargetWidget(QWidget):
+    """Floating desktop widget allowing native drag-and-drop on Linux/Wayland."""
+    def __init__(self, ctl: Controller):
+        super().__init__(None, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool)
+        self.ctl = ctl
+        self.hover = False
+        self._drag_pos = None
+        self.setAcceptDrops(True)
+        self.resize(72, 72)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setToolTip("Vitarg Drop Target\nDrag files here to convert\nDouble-click to choose files\nDrag to reposition")
+        scr = QGuiApplication.primaryScreen()
+        if scr:
+            geom = scr.availableGeometry()
+            self.move(geom.right() - 88, geom.bottom() - 96)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        bg = QColor(40, 40, 50, 240) if self.hover else QColor(76, 29, 149, 210)
+        border = QColor(138, 43, 226, 255) if self.hover else QColor(138, 43, 226, 200)
+        p.setBrush(bg)
+        p.setPen(QPen(border, 2.0 if self.hover else 1.2))
+        p.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 16, 16)
+        p.setPen(QColor(255, 255, 255, 230))
+        font = p.font()
+        font.setPointSize(18)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(self.rect(), Qt.AlignCenter, "+")
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            self.hover = True
+            self.update()
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e):
+        self.hover = False
+        self.update()
+        e.accept()
+
+    def dropEvent(self, e):
+        self.hover = False
+        self.update()
+        urls = e.mimeData().urls()
+        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        if paths:
+            self.ctl.present_files(paths)
+        e.acceptProposedAction()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
+        elif e.button() == Qt.RightButton:
+            menu = QMenu(self)
+            menu.addAction("Select Files…", self.ctl.select_files_dialog)
+            menu.addAction("Settings…", self.ctl.open_settings)
+            menu.addAction("Hide Drop Target", self.hide)
+            menu.exec(e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        if self._drag_pos and (e.buttons() & Qt.LeftButton):
+            self.move(e.globalPosition().toPoint() - self._drag_pos)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.ctl.select_files_dialog()
+
+
 class Controller:
     def __init__(self, app: QApplication, settings: Settings):
         self.app, self.s = app, settings
@@ -42,30 +127,113 @@ class Controller:
         self.monitor.released.connect(lambda: QTimer.singleShot(350, self.wheel.dismiss))
         self.monitor.cancelled.connect(self.wheel.dismiss)
         self.wheel.chosen.connect(self.on_choice)
+
+        self.drop_target = DropTargetWidget(self)
+
         self.tray = QSystemTrayIcon(make_icon(), app)
         self.tray.setToolTip("Vitarg")
         menu = QMenu()
         self.act_enabled = QAction("Active", menu, checkable=True, checked=settings.enabled)
         self.act_enabled.toggled.connect(self._toggle)
         self.info = QAction("", menu); self.info.setEnabled(False)
+
+        self.act_select = QAction("Select Files to Convert…", menu)
+        self.act_select.triggered.connect(self.select_files_dialog)
+
+        self.act_drop = QAction("Floating Drop Target", menu, checkable=True)
+        self.act_drop.setChecked(False)
+        self.act_drop.toggled.connect(self._toggle_drop_target)
+
         self.act_undo = QAction("↩ Undo Last Operation", menu)
         self.act_undo.setShortcut("Ctrl+Z")
         self.act_undo.triggered.connect(self._tray_undo)
         st = QAction("Settings…", menu); st.triggered.connect(self.open_settings)
         upd = QAction("Check for Updates…", menu); upd.triggered.connect(lambda: self.check_for_updates(True))
         quit_ = QAction("Quit Vitarg", menu); quit_.triggered.connect(self.quit)
-        for a in (self.info, self.act_enabled, self.act_undo, st, upd):
+        for a in (self.info, self.act_enabled, self.act_select, self.act_drop, self.act_undo, st, upd):
             menu.addAction(a)
         menu.addSeparator(); menu.addAction(quit_)
         self.menu = menu
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda r: self.open_settings() if r == QSystemTrayIcon.Trigger else None)
-        self.tray.show()
+
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.show()
+        elif sys.platform != "win32":
+            self.drop_target.show()
+            self.act_drop.setChecked(True)
+
+        self.ipc_server = QLocalServer(self.app)
+        self.ipc_server.newConnection.connect(self._on_ipc_connection)
+        server_name = f"vitarg-ipc-{os.getenv('USER') or os.getenv('USERNAME') or 'default'}"
+        QLocalServer.removeServer(server_name)
+        self.ipc_server.listen(server_name)
+
         self.refresh_info()
         self.wheel.update()
         self.monitor.start()
         if settings.auto_update:
             QTimer.singleShot(4000, lambda: self.check_for_updates(interactive=False))
+
+    def _on_ipc_connection(self):
+        sock = self.ipc_server.nextPendingConnection()
+        if not sock:
+            return
+        if not sock.waitForReadyRead(500):
+            sock.disconnectFromServer()
+            return
+        data = sock.readAll().data().decode("utf-8", errors="ignore")
+        sock.disconnectFromServer()
+        try:
+            payload = json.loads(data)
+            action = payload.get("action")
+            if action == "open":
+                files = payload.get("files", [])
+                if files:
+                    self.present_files(files)
+            elif action == "activate":
+                self.open_settings()
+        except Exception:
+            pass
+
+    def _toggle_drop_target(self, on: bool):
+        if on:
+            self.drop_target.show()
+            self.drop_target.raise_()
+        else:
+            self.drop_target.hide()
+
+    def _get_invocation_pos(self) -> tuple[int, int]:
+        screen = self.app.primaryScreen() or (self.app.screens()[0] if self.app.screens() else None)
+        is_wayland = sys.platform != "win32" and (
+            bool(os.environ.get("WAYLAND_DISPLAY"))
+            or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            or (QGuiApplication.platformName() and "wayland" in QGuiApplication.platformName().lower())
+        )
+        if is_wayland or screen is None:
+            if screen:
+                c = screen.availableGeometry().center()
+                return c.x(), c.y()
+            return 400, 300
+        pos = QCursor.pos()
+        if any(s.geometry().contains(pos) for s in self.app.screens()):
+            return pos.x(), pos.y()
+        if screen:
+            c = screen.availableGeometry().center()
+            return c.x(), c.y()
+        return pos.x(), pos.y()
+
+    def present_files(self, paths: list[str]):
+        valid = [str(Path(p)) for p in paths if os.path.exists(p)]
+        if not valid:
+            return
+        gx, gy = self._get_invocation_pos()
+        self.wheel.present("conv", valid, gx, gy)
+
+    def select_files_dialog(self):
+        files, _ = QFileDialog.getOpenFileNames(None, "Select Files to Convert with Vitarg")
+        if files:
+            self.present_files(files)
 
     # -------------------------------------------------------------
     def refresh_info(self):
@@ -84,7 +252,13 @@ class Controller:
         self.settings_dlg.show(); self.settings_dlg.raise_(); self.settings_dlg.activateWindow()
 
     def quit(self):
-        self.monitor.stop(); self.wheel.dismiss(); self.tray.hide(); self.app.quit()
+        if hasattr(self, "ipc_server"):
+            self.ipc_server.close()
+        self.monitor.stop()
+        self.wheel.dismiss()
+        self.drop_target.hide()
+        self.tray.hide()
+        self.app.quit()
 
     def check_for_updates(self, interactive: bool = True):
         self._upd_thread = UpdateCheckThread(__version__, self.app)
@@ -174,7 +348,9 @@ def selftest() -> int:
     report = Path(tempfile.gettempdir()) / "vitarg-selftest.txt"     # windowed exe has no console
     missing = [t for t in ("ffmpeg", "ffprobe", "pandoc") if not engine.find_tool(t)]
     try:
-        import fitz, docx, PIL, PySide6, win32com.client, py7zr, urllib.request  # noqa
+        import fitz, docx, PIL, PySide6, py7zr, urllib.request  # noqa
+        if sys.platform == "win32":
+            import win32com.client  # noqa
     except ImportError as e:
         report.write_text(f"MISSING MODULE: {e}")
         return 3
@@ -185,18 +361,40 @@ def selftest() -> int:
 def main():
     if "--selftest" in sys.argv:
         return selftest()
+
+    # Extract CLI file arguments
+    cli_files = [os.path.abspath(arg) for arg in sys.argv[1:] if not arg.startswith("-") and os.path.exists(arg)]
+
+    server_name = f"vitarg-ipc-{os.getenv('USER') or os.getenv('USERNAME') or 'default'}"
     app = QApplication(sys.argv)
     app.setApplicationName("Vitarg")
     app.setQuitOnLastWindowClosed(False)
-    lock = QLockFile(os.path.join(tempfile.gettempdir(), "vitarg-win.lock"))
+
+    # Check for existing instance via IPC socket
+    sock = QLocalSocket()
+    sock.connectToServer(server_name)
+    if sock.waitForConnected(200):
+        if cli_files:
+            msg = json.dumps({"action": "open", "files": cli_files}).encode("utf-8")
+        else:
+            msg = json.dumps({"action": "activate"}).encode("utf-8")
+        sock.write(msg)
+        sock.waitForBytesWritten(1000)
+        sock.disconnectFromServer()
+        return 0
+
+    lock_name = "vitarg-win.lock" if sys.platform == "win32" else "vitarg.lock"
+    lock = QLockFile(os.path.join(tempfile.gettempdir(), lock_name))
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
         QMessageBox.information(None, "Vitarg", "Vitarg is already running (look for its icon in the tray).")
         return 0
+
     first_run = not Settings.path().exists()
     settings = Settings.load()
     ctl = Controller(app, settings)
     app.ctl = ctl
+
     if first_run:
         settings.save()
         try:
@@ -205,4 +403,8 @@ def main():
         except Exception:
             pass
         QTimer.singleShot(600, ctl.open_settings)       # first run: show where the triggers are configured
+
+    if cli_files:
+        QTimer.singleShot(250, lambda: ctl.present_files(cli_files))
+
     return app.exec()

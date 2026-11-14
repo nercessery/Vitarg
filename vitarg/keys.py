@@ -26,10 +26,15 @@ def primary_button_down() -> bool:
 
 
 def cursor_pos():
-    if not _user32 or not _PT:
+    if _user32 and _PT:
+        _user32.GetCursorPos(ctypes.byref(_PT))
+        return (_PT.x, _PT.y)
+    try:
+        from PySide6.QtGui import QCursor
+        p = QCursor.pos()
+        return (p.x(), p.y())
+    except Exception:
         return (0, 0)
-    _user32.GetCursorPos(ctypes.byref(_PT))
-    return (_PT.x, _PT.y)
 
 
 def name_down(name: str) -> bool:

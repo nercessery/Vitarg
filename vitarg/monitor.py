@@ -85,6 +85,8 @@ class DragMonitor(QObject):
         self.last_pressed: set = set()          # exposed for the settings 'test' panel
 
     def start(self):
+        if sys.platform != "win32":
+            return
         self.timer.start()
 
     def stop(self):
@@ -105,10 +107,12 @@ class DragMonitor(QObject):
             self.sel = paths
 
     def _tick(self):
-        s = self.s
-        down = keys.primary_button_down()
-        if not s.enabled or sys.platform != "win32":
+        if sys.platform != "win32":
             return
+        s = self.s
+        if not s.enabled:
+            return
+        down = keys.primary_button_down()
         if not down:
             if self.timer.interval() != 33:
                 self.timer.setInterval(33)          # return to battery-saving idle frequency
