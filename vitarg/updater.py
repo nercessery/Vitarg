@@ -230,7 +230,20 @@ class UpdateDialog(Panel):
     def _on_later(self):
         if self.dl_thread and self.dl_thread.isRunning():
             self.dl_thread.cancel()
+            self.dl_thread.wait(1000)
         self.reject()
+
+    def reject(self):
+        if self.dl_thread and self.dl_thread.isRunning():
+            self.dl_thread.cancel()
+            self.dl_thread.wait(1000)
+        super().reject()
+
+    def closeEvent(self, e):
+        if self.dl_thread and self.dl_thread.isRunning():
+            self.dl_thread.cancel()
+            self.dl_thread.wait(1000)
+        super().closeEvent(e)
 
     def _start_download(self):
         self.btn_update.setEnabled(False)

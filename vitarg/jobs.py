@@ -85,6 +85,7 @@ class JobWindow(Panel):
         self.outputs: list[str] = []
         self._auto_close_timer = None
         self._countdown = 8
+        self._released = False
 
         self.sub = QLabel(subtitle)
         self.sub.setObjectName("hint")
@@ -252,8 +253,24 @@ class JobWindow(Panel):
     def close_and_release(self):
         if self._auto_close_timer:
             self._auto_close_timer.stop()
+        if hasattr(self, "worker") and self.worker and self.worker.isRunning():
+            self.worker.cancel.set()
+            self.worker.wait(1500)
         self.hide()
-        self.job_done.emit(self)
+        if not getattr(self, "_released", False):
+            self._released = True
+            self.job_done.emit(self)
+
+    def closeEvent(self, e):
+        if self._auto_close_timer:
+            self._auto_close_timer.stop()
+        if hasattr(self, "worker") and self.worker and self.worker.isRunning():
+            self.worker.cancel.set()
+            self.worker.wait(1500)
+        if not getattr(self, "_released", False):
+            self._released = True
+            self.job_done.emit(self)
+        super().closeEvent(e)
 
     def reject(self):
         self.close_and_release()

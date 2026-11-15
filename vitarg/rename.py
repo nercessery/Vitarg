@@ -14,7 +14,7 @@ def format_rename(original_path: str | Path, pattern_or_name: str, ext: str, ind
     now = datetime.datetime.now()
     date_str = now.strftime("%Y%m%d")
     time_str = now.strftime("%H%M%S")
-    clean_ext = ext if ext.startswith(".") else f".{ext}"
+    clean_ext = f".{ext.lstrip('.')}" if ext else ""
 
     p = pattern_or_name.strip()
     if not p:
@@ -46,10 +46,11 @@ def format_rename(original_path: str | Path, pattern_or_name: str, ext: str, ind
 
     # Sanitize invalid Windows filename characters: \ / : * ? " < > |
     name = re.sub(r'[\\/*?:"<>|]', "", name).strip()
+    name = name.rstrip(". ")
     if not name:
         name = stem
 
-    if not name.lower().endswith(clean_ext.lower()):
+    if clean_ext and not name.lower().endswith(clean_ext.lower()):
         name = f"{name}{clean_ext}"
     return name
 
@@ -76,9 +77,13 @@ def apply_custom_rename(created_paths: list[str], custom_name: str, start_index:
 
         # Avoid collision with other existing files
         counter = 2
-        stem = target.stem
+        is_targz = target.name.lower().endswith(".tar.gz")
+        stem = target.name[:-7] if is_targz else target.stem
         while target.exists() and target != p:
-            target = p.parent / f"{stem}_{counter:02d}{ext}"
+            if is_targz:
+                target = p.parent / f"{stem}_{counter:02d}.tar.gz"
+            else:
+                target = p.parent / f"{stem}_{counter:02d}{ext}"
             counter += 1
 
         try:

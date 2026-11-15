@@ -5,10 +5,16 @@ Set-Location $root
 
 function Use-Venv($pythonExe) {
     $ErrorActionPreference = "Continue"
-    Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
-    & $pythonExe -m venv .venv | Out-Host
-    if ($LASTEXITCODE -ne 0) { return $false }
     $vp = Join-Path $root ".venv\Scripts\python.exe"
+    if (Test-Path $vp) {
+        & $vp -c "import PIL, PySide6, fitz, docx, py7zr, win32com, PyInstaller" 2>&1 | Out-Host
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
+    & $pythonExe -m venv --system-site-packages .venv | Out-Host
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $vp -c "import PIL, PySide6, fitz, docx, py7zr, win32com, PyInstaller" 2>&1 | Out-Host
+    if ($LASTEXITCODE -eq 0) { return $true }
     & $vp -m pip install --upgrade pip --quiet | Out-Host
     & $vp -m pip install -r requirements.txt --quiet | Out-Host
     $installOk = ($LASTEXITCODE -eq 0)
@@ -63,10 +69,14 @@ $py = Join-Path $root ".venv\Scripts\python.exe"
 Write-Host "=== Running tests ==="
 $env:PATH = "$root\tools;$env:PATH"
 $ErrorActionPreference = "Continue"
-& $py -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath test-results.txt
-$testsOk = ($LASTEXITCODE -eq 0)
+& $py -m unittest discover -s tests -p "test_*.py" -v 2>&1 | Tee-Object -FilePath test-results.txt
+$testExitCode = $LASTEXITCODE
+$testsOk = ($testExitCode -eq 0)
 $ErrorActionPreference = "Stop"
-if (-not $testsOk) { Write-Warning "Some tests failed (see test-results.txt)." }
+if (-not $testsOk -or $testExitCode -ne 0) {
+    Write-Error "Unit tests failed with exit code $testExitCode (see test-results.txt). Halting build."
+    exit 1
+}
 
 Write-Host "=== Building Application ==="
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
@@ -76,20 +86,47 @@ Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
     --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf `
     --hidden-import win32com.client --hidden-import pythoncom --hidden-import winsound `
     run_vitarg.py
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "PyInstaller build failed with exit code $LASTEXITCODE"
+    exit 1
+}
+
+# Ensure tools and assets directories are accessible at dist\Vitarg root for layout compatibility
+if (Test-Path "$root\dist\Vitarg\_internal\tools") {
+    if (-not (Test-Path "$root\dist\Vitarg\tools")) {
+        try {
+            New-Item -ItemType Junction -Path "$root\dist\Vitarg\tools" -Target "$root\dist\Vitarg\_internal\tools" -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+    }
+}
+if (Test-Path "$root\dist\Vitarg\_internal\assets") {
+    if (-not (Test-Path "$root\dist\Vitarg\assets")) {
+        try {
+            New-Item -ItemType Junction -Path "$root\dist\Vitarg\assets" -Target "$root\dist\Vitarg\_internal\assets" -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+    }
+}
 
 Write-Host "=== Self-test ==="
 $exe = Join-Path $root "dist\Vitarg\Vitarg.exe"
+if (-not (Test-Path $exe)) {
+    Write-Error "Vitarg.exe not found at $exe"
+    exit 1
+}
 $p = Start-Process $exe -ArgumentList "--selftest" -PassThru
 $exited = $p.WaitForExit(30000)
 if (-not $exited) {
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     $report = Get-Content (Join-Path $env:TEMP "vitarg-selftest.txt") -ErrorAction SilentlyContinue
-    throw "Self-test timed out after 30 seconds! Report: $report"
+    Write-Error "Self-test timed out after 30 seconds! Report: $report"
+    exit 1
 }
 $report = Get-Content (Join-Path $env:TEMP "vitarg-selftest.txt") -ErrorAction SilentlyContinue
 Write-Host "Self-test exit code $($p.ExitCode): $report"
-if ($p.ExitCode -ne 0) { throw "Self-test failed" }
+if ($p.ExitCode -ne 0) {
+    Write-Error "Self-test failed with exit code $($p.ExitCode): $report"
+    exit 1
+}
 
 Write-Host "=== Building Installer (Vitarg-Setup.exe) ==="
 $iscc = @(
@@ -101,12 +138,14 @@ $iscc = @(
 
 if ($iscc) {
     & $iscc installer\Vitarg.iss
-    if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler failed" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Inno Setup compiler failed with exit code $LASTEXITCODE"
+        exit 1
+    }
     Write-Host "Installer built successfully: dist\Vitarg-Setup.exe"
 } else {
-    throw "Inno Setup compiler (iscc.exe) not found. On GitHub Actions it will be installed automatically."
+    Write-Warning "Inno Setup compiler (iscc.exe) not found. Skipping installer creation. On GitHub Actions it will be installed automatically."
 }
 
-if (-not $testsOk) { Write-Warning "Reminder: some tests failed (see test-results.txt)." }
-$global:LASTEXITCODE = 0
+Write-Host "=== Build Completed Successfully ==="
 exit 0

@@ -385,7 +385,7 @@ def main():
 
     lock_name = "vitarg-win.lock" if sys.platform == "win32" else "vitarg.lock"
     lock = QLockFile(os.path.join(tempfile.gettempdir(), lock_name))
-    lock.setStaleLockTime(0)
+    lock.setStaleLockTime(30000)  # 30s stale lock recovery to prevent permanent lockout after crash
     if not lock.tryLock(100):
         QMessageBox.information(None, "Vitarg", "Vitarg is already running (look for its icon in the tray).")
         return 0

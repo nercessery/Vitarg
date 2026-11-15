@@ -99,6 +99,10 @@ def _hex(c: str):
 
 def _single_frame(im, path):
     if getattr(im, "n_frames", 1) > 1:
+        try:
+            im.close()
+        except Exception:
+            pass
         raise ConversionError("Animated/multi-page images are not supported by this tool.")
 
 
@@ -115,6 +119,8 @@ def _save_same(im, out: Path, fmt: str, quality=92):
         im.save(out, "TIFF", compression="tiff_lzw")
     elif fmt == "bmp":
         engine._flatten(im).save(out, "BMP")
+    elif fmt == "gif":
+        im.save(out, "GIF")
     else:
         raise ConversionError(f"This tool supports JPG, PNG, WebP, TIFF and BMP images, not .{fmt}.")
 
@@ -127,71 +133,110 @@ def compress_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
     strong = p.get("preset") == "Strong"
     target = 0.5 if strong else 0.8                    # fraction of original size
     orig = src.stat().st_size
-    im = engine.load_image(src)
-    _single_frame(im, src)
-    im = ImageOps.exif_transpose(im)
-    edge = p.get("max_edge", "Original")
-    if edge != "Original" and max(im.size) > int(edge):
-        im.thumbnail((int(edge), int(edge)), Image.LANCZOS)
-    out = _out(ws, src, "Compressed")
-    tmp = ws.path("_c." + fmt)
-    if fmt in ("jpg", "webp"):
-        for q in range(88, (29 if strong else 39), -6):
-            _save_same(im, tmp, fmt, q)
-            if tmp.stat().st_size <= orig * target:
-                break
-        if tmp.exists():
-            shutil.copyfile(tmp, out)
-    elif fmt == "png":
-        _save_same(im, out, "png")
-        if out.stat().st_size > orig * target and strong and im.mode in ("RGB", "RGBA"):
-            q = im.quantize(256, method=Image.FASTOCTREE if im.mode == "RGBA" else Image.MEDIANCUT)
-            q.save(tmp, "PNG", optimize=True)
-            if tmp.stat().st_size < out.stat().st_size:
+    raw = engine.load_image(src)
+    try:
+        _single_frame(raw, src)
+        im = ImageOps.exif_transpose(raw)
+        edge = p.get("max_edge", "Original")
+        if edge != "Original" and max(im.size) > int(edge):
+            im.thumbnail((int(edge), int(edge)), Image.LANCZOS)
+        out = _out(ws, src, "Compressed")
+        tmp = ws.path("_c." + fmt)
+        if fmt in ("jpg", "webp"):
+            for q in range(88, (29 if strong else 39), -6):
+                _save_same(im, tmp, fmt, q)
+                if tmp.stat().st_size <= orig * target:
+                    break
+            if tmp.exists():
                 shutil.copyfile(tmp, out)
-    else:
-        _save_same(im, out, "tiff")
-    tmp.unlink(missing_ok=True)
-    if out.stat().st_size >= orig:                      # never make it bigger
-        shutil.copyfile(src, out)
-    return out
+        elif fmt == "png":
+            _save_same(im, out, "png")
+            if out.stat().st_size > orig * target and strong and im.mode in ("RGB", "RGBA"):
+                q = im.quantize(256, method=Image.FASTOCTREE if im.mode == "RGBA" else Image.MEDIANCUT)
+                q.save(tmp, "PNG", optimize=True)
+                if tmp.stat().st_size < out.stat().st_size:
+                    shutil.copyfile(tmp, out)
+        else:
+            _save_same(im, out, "tiff")
+        tmp.unlink(missing_ok=True)
+        if out.stat().st_size >= orig:                      # never make it bigger
+            shutil.copyfile(src, out)
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        if "im" in locals() and im is not raw:
+            try:
+                im.close()
+            except Exception:
+                pass
 
 
 def strip_image(src: Path, ws: Workspace) -> Path:
     from PIL import Image, ImageOps
     fmt = fmt_of(src)
-    im = engine.load_image(src)
-    _single_frame(im, src)
-    icc = im.info.get("icc_profile")
-    im = ImageOps.exif_transpose(im)
-    clean = Image.new(im.mode, im.size)
-    clean.putdata(list(im.getdata())) if im.mode != "P" else clean.paste(im)
-    if im.mode == "P":
-        clean.putpalette(im.getpalette())
-    out = _out(ws, src, "No Metadata")
-    if fmt == "jpg":
-        clean.save(out, "JPEG", quality=95, optimize=True, icc_profile=icc)
-    elif fmt == "png":
-        clean.save(out, "PNG", optimize=True, icc_profile=icc)
-    elif fmt == "webp":
-        clean.save(out, "WEBP", lossless=True, icc_profile=icc)
-    elif fmt == "tiff":
-        clean.save(out, "TIFF", compression="tiff_lzw", icc_profile=icc)
-    else:
-        raise ConversionError(f"Metadata removal supports JPG, PNG, WebP and TIFF, not .{fmt}.")
-    return out
+    raw = engine.load_image(src)
+    try:
+        _single_frame(raw, src)
+        icc = raw.info.get("icc_profile")
+        im = ImageOps.exif_transpose(raw)
+        clean = Image.new(im.mode, im.size)
+        clean.putdata(list(im.getdata())) if im.mode != "P" else clean.paste(im)
+        if im.mode == "P":
+            clean.putpalette(im.getpalette())
+        out = _out(ws, src, "No Metadata")
+        if fmt == "jpg":
+            clean.save(out, "JPEG", quality=95, optimize=True, icc_profile=icc)
+        elif fmt == "png":
+            clean.save(out, "PNG", optimize=True, icc_profile=icc)
+        elif fmt == "webp":
+            clean.save(out, "WEBP", lossless=True, icc_profile=icc)
+        elif fmt == "tiff":
+            clean.save(out, "TIFF", compression="tiff_lzw", icc_profile=icc)
+        else:
+            raise ConversionError(f"Metadata removal supports JPG, PNG, WebP and TIFF, not .{fmt}.")
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        if "im" in locals() and im is not raw:
+            try:
+                im.close()
+            except Exception:
+                pass
+        if "clean" in locals():
+            try:
+                clean.close()
+            except Exception:
+                pass
 
 
 def crop_image(src: Path, ws: Workspace, box, settings) -> Path:
     from PIL import ImageOps
-    im = ImageOps.exif_transpose(engine.load_image(src))
-    _single_frame(im, src)
-    l, t, r, b = [int(round(v)) for v in box]
-    if r - l < 1 or b - t < 1 or l < 0 or t < 0 or r > im.width or b > im.height:
-        raise ConversionError("Invalid crop rectangle.")
-    out = _out(ws, src, "Cropped")
-    _save_same(im.crop((l, t, r, b)), out, fmt_of(src), settings.jpg_quality)
-    return out
+    raw = engine.load_image(src)
+    try:
+        _single_frame(raw, src)
+        im = ImageOps.exif_transpose(raw)
+        l, t, r, b = [int(round(v)) for v in box]
+        if r - l < 1 or b - t < 1 or l < 0 or t < 0 or r > im.width or b > im.height:
+            raise ConversionError("Invalid crop rectangle.")
+        out = _out(ws, src, "Cropped")
+        _save_same(im.crop((l, t, r, b)), out, fmt_of(src), settings.jpg_quality)
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        if "im" in locals() and im is not raw:
+            try:
+                im.close()
+            except Exception:
+                pass
 
 
 def apply_edit(im, p: dict):
@@ -224,21 +269,45 @@ def preview_image(tool_id: str, im, p: dict):
 
 def edit_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
     from PIL import ImageOps
-    im = ImageOps.exif_transpose(engine.load_image(src))
-    _single_frame(im, src)
-    out = _out(ws, src, "Edited")
-    _save_same(apply_edit(im, p), out, fmt_of(src), settings.jpg_quality)
-    return out
+    raw = engine.load_image(src)
+    try:
+        _single_frame(raw, src)
+        im = ImageOps.exif_transpose(raw)
+        out = _out(ws, src, "Edited")
+        _save_same(apply_edit(im, p), out, fmt_of(src), settings.jpg_quality)
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        if "im" in locals() and im is not raw:
+            try:
+                im.close()
+            except Exception:
+                pass
 
 
 def add_background(src: Path, ws: Workspace, p: dict, settings) -> Path:
     from PIL import ImageOps
-    im = ImageOps.exif_transpose(engine.load_image(src))
-    _single_frame(im, src)
-    fmt = fmt_of(src)
-    out = _out(ws, src, "With Background", "jpg" if fmt == "jpg" else "png")
-    _save_same(apply_bg(im, p), out, "jpg" if fmt == "jpg" else "png", settings.jpg_quality)
-    return out
+    raw = engine.load_image(src)
+    try:
+        _single_frame(raw, src)
+        im = ImageOps.exif_transpose(raw)
+        fmt = fmt_of(src)
+        out = _out(ws, src, "With Background", "jpg" if fmt == "jpg" else "png")
+        _save_same(apply_bg(im, p), out, "jpg" if fmt == "jpg" else "png", settings.jpg_quality)
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        if "im" in locals() and im is not raw:
+            try:
+                im.close()
+            except Exception:
+                pass
 
 
 def build_collage(ims, p: dict, cell: int = 800):
@@ -258,18 +327,42 @@ def build_collage(ims, p: dict, cell: int = 800):
 
 def collage(srcs, ws: Workspace, p: dict) -> Path:
     from PIL import ImageOps
-    ims = [ImageOps.exif_transpose(engine.load_image(s)).convert("RGBA") for s in srcs]
-    out = ws.path("Photo Collage.png")
-    build_collage(ims, p, 800).save(out, "PNG", optimize=True)
-    return out
+    raws = []
+    try:
+        ims = []
+        for s in srcs:
+            raw = engine.load_image(s)
+            raws.append(raw)
+            ims.append(ImageOps.exif_transpose(raw).convert("RGBA"))
+        out = ws.path("Photo Collage.png")
+        build_collage(ims, p, 800).save(out, "PNG", optimize=True)
+        return out
+    finally:
+        for r in raws:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 def images_to_pdf(srcs, ws: Workspace) -> Path:
     from PIL import ImageOps
-    ims = [engine._flatten(ImageOps.exif_transpose(engine.load_image(s))) for s in srcs]
-    out = ws.path("Images.pdf")
-    ims[0].save(out, "PDF", save_all=True, append_images=ims[1:], resolution=150.0)
-    return out
+    raws = []
+    try:
+        ims = []
+        for s in srcs:
+            raw = engine.load_image(s)
+            raws.append(raw)
+            ims.append(engine._flatten(ImageOps.exif_transpose(raw)))
+        out = ws.path("Images.pdf")
+        ims[0].save(out, "PDF", save_all=True, append_images=ims[1:], resolution=150.0)
+        return out
+    finally:
+        for r in raws:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------------ media
@@ -409,56 +502,56 @@ def join_videos(srcs, ws: Workspace, progress, cancel) -> Path:
 # ------------------------------------------------------------------ pdf / archive
 def pdf_compress(src: Path, ws: Workspace) -> Path:
     fz = engine._fitz()
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    out = _out(ws, src, "Compressed")
-    doc.save(str(out), garbage=4, deflate=True, clean=True)
-    if out.stat().st_size >= src.stat().st_size:
-        shutil.copyfile(src, out)
-    return out
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        out = _out(ws, src, "Compressed")
+        doc.save(str(out), garbage=4, deflate=True, clean=True)
+        if out.stat().st_size >= src.stat().st_size:
+            shutil.copyfile(src, out)
+        return out
 
 
 def pdf_strip(src: Path, ws: Workspace) -> Path:
     fz = engine._fitz()
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    doc.set_metadata({})
-    try:
-        doc.del_xml_metadata()
-    except Exception:
-        pass
-    out = _out(ws, src, "No Metadata")
-    doc.save(str(out), garbage=3, deflate=True)
-    return out
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        doc.set_metadata({})
+        try:
+            doc.del_xml_metadata()
+        except Exception:
+            pass
+        out = _out(ws, src, "No Metadata")
+        doc.save(str(out), garbage=3, deflate=True)
+        return out
 
 
 def pdf_split(src: Path, ws: Workspace) -> Path:
     fz = engine._fitz()
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    folder = ws.path(f"{src.stem} Pages")
-    folder.mkdir()
-    for i in range(len(doc)):
-        part = fz.open()
-        part.insert_pdf(doc, from_page=i, to_page=i)
-        part.save(str(folder / f"Page {i + 1:03d}.pdf"))
-    return folder
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        folder = ws.path(f"{src.stem} Pages")
+        folder.mkdir()
+        for i in range(len(doc)):
+            with fz.open() as part:
+                part.insert_pdf(doc, from_page=i, to_page=i)
+                part.save(str(folder / f"Page {i + 1:03d}.pdf"))
+        return folder
 
 
 def pdf_merge(srcs, ws: Workspace) -> Path:
     fz = engine._fitz()
-    merged = fz.open()
-    for s in srcs:
-        d = fz.open(str(s))
-        if d.needs_pass:
-            raise ConversionError(f"{Path(s).name} is password protected.")
-        merged.insert_pdf(d)
-    out = ws.path("Merged.pdf")
-    merged.save(str(out), garbage=3, deflate=True)
-    return out
+    with fz.open() as merged:
+        for s in srcs:
+            with fz.open(str(s)) as d:
+                if d.needs_pass:
+                    raise ConversionError(f"{Path(s).name} is password protected.")
+                merged.insert_pdf(d)
+        out = ws.path("Merged.pdf")
+        merged.save(str(out), garbage=3, deflate=True)
+        return out
 
 
 def extract_archive(src: Path, ws: Workspace) -> Path:
@@ -490,29 +583,35 @@ def _resolve_resize(p: dict, orig_w: int, orig_h: int) -> tuple[int, int]:
 
 def resize_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
     from PIL import Image, ImageOps
-    im = engine.load_image(src)
-    n = getattr(im, "n_frames", 1)
-    fmt = fmt_of(src)
-    tw, th = _resolve_resize(p, im.width, im.height)
-    suffix = f"{tw}x{th}"
-    out = _out(ws, src, suffix)
+    raw = engine.load_image(src)
+    try:
+        n = getattr(raw, "n_frames", 1)
+        fmt = fmt_of(src)
+        tw, th = _resolve_resize(p, raw.width, raw.height)
+        suffix = f"{tw}x{th}"
+        out = _out(ws, src, suffix)
 
-    if n > 1 and fmt in ("gif", "webp"):
-        frames, durs = [], []
-        for i in range(n):
-            im.seek(i)
-            durs.append(im.info.get("duration", 100))
-            fr = ImageOps.exif_transpose(im).convert("RGBA")
-            frames.append(fr.resize((tw, th), Image.LANCZOS))
-        kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
-        if fmt == "gif":
-            kw["disposal"] = 2
-        frames[0].save(out, fmt.upper(), **kw)
-    else:
-        im = ImageOps.exif_transpose(im)
-        resized = im.resize((tw, th), Image.LANCZOS)
-        _save_same(resized, out, fmt, settings.jpg_quality)
-    return out
+        if n > 1 and fmt in ("gif", "webp"):
+            frames, durs = [], []
+            for i in range(n):
+                raw.seek(i)
+                durs.append(raw.info.get("duration", 100))
+                fr = ImageOps.exif_transpose(raw).convert("RGBA")
+                frames.append(fr.resize((tw, th), Image.LANCZOS))
+            kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
+            if fmt == "gif":
+                kw["disposal"] = 2
+            frames[0].save(out, fmt.upper(), **kw)
+        else:
+            im = ImageOps.exif_transpose(raw)
+            resized = im.resize((tw, th), Image.LANCZOS)
+            _save_same(resized, out, fmt, settings.jpg_quality)
+        return out
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
 
 
 def resize_video(src: Path, ws: Workspace, p: dict, progress, cancel) -> Path:
@@ -541,34 +640,34 @@ def resize_video(src: Path, ws: Workspace, p: dict, progress, cancel) -> Path:
 def resize_pdf(src: Path, ws: Workspace, p: dict) -> Path:
     """Re-render every page of a PDF at a different resolution (scale % or exact width/height)."""
     fz = engine._fitz()
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    if len(doc) == 0:
-        raise ConversionError("The PDF has no pages.")
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        if len(doc) == 0:
+            raise ConversionError("The PDF has no pages.")
 
-    first_page = doc[0]
-    pw, ph = first_page.rect.width, first_page.rect.height
-    mode = p.get("mode", "Scale %")
-    if mode == "Scale %":
-        scale_pct = max(10, min(800, int(p.get("scale", 100))))
-        zoom = scale_pct / 100.0
-        suffix = f"{scale_pct}pct"
-    else:
-        tw, th = _resolve_resize(p, int(pw), int(ph))
-        zoom = tw / pw if pw > 0 else 1.0
-        suffix = f"{tw}x{th}"
+        first_page = doc[0]
+        pw, ph = first_page.rect.width, first_page.rect.height
+        mode = p.get("mode", "Scale %")
+        if mode == "Scale %":
+            scale_pct = max(10, min(800, int(p.get("scale", 100))))
+            zoom = scale_pct / 100.0
+            suffix = f"{scale_pct}pct"
+        else:
+            tw, th = _resolve_resize(p, int(pw), int(ph))
+            zoom = tw / pw if pw > 0 else 1.0
+            suffix = f"{tw}x{th}"
 
-    dpi = max(36, min(600, int(round(72 * zoom))))
-    new_doc = fz.open()
-    for page in doc:
-        pix = page.get_pixmap(dpi=dpi, alpha=False)
-        img_rect = fz.Rect(0, 0, page.rect.width, page.rect.height)
-        new_page = new_doc.new_page(width=img_rect.width, height=img_rect.height)
-        new_page.insert_image(img_rect, stream=pix.tobytes("png"))
-    out = _out(ws, src, suffix, "pdf")
-    new_doc.save(str(out), garbage=4, deflate=True)
-    return out
+        dpi = max(36, min(600, int(round(72 * zoom))))
+        with fz.open() as new_doc:
+            for page in doc:
+                pix = page.get_pixmap(dpi=dpi, alpha=False)
+                img_rect = fz.Rect(0, 0, page.rect.width, page.rect.height)
+                new_page = new_doc.new_page(width=img_rect.width, height=img_rect.height)
+                new_page.insert_image(img_rect, stream=pix.tobytes("png"))
+            out = _out(ws, src, suffix, "pdf")
+            new_doc.save(str(out), garbage=4, deflate=True)
+        return out
 
 
 # ------------------------------------------------------------------ dispatcher
@@ -603,6 +702,8 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
         try:
             with Workspace(settings, s) as ws:
                 fam = family(fmt_of(s))
+                if fam == "gif":
+                    fam = "image"
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 if tool_id == "compress":
@@ -669,7 +770,14 @@ def thumb(path, box=(500, 340)):
         _THUMBS.move_to_end(key)
         return _THUMBS[key].copy()
     from PIL import ImageOps
-    im = ImageOps.exif_transpose(engine.load_image(path)).convert("RGBA")
+    raw = engine.load_image(path)
+    try:
+        im = ImageOps.exif_transpose(raw).convert("RGBA")
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
     im.thumbnail(box)
     _THUMBS[key] = im
     if len(_THUMBS) > _MAX_THUMBS:
@@ -687,8 +795,9 @@ def media_frame(src, t: float, width: int = 480):
                        capture_output=True, creationflags=engine.NOWIN)
         if not os.path.exists(out) or os.path.getsize(out) == 0:
             raise ConversionError("No frame at that time.")
-        im = Image.open(out); im.load()
-        return im.convert("RGB")
+        with Image.open(out) as im:
+            im.load()
+            return im.convert("RGB")
     finally:
         try:
             os.unlink(out)
@@ -706,8 +815,9 @@ def waveform_image(src, w: int = 500, h: int = 120):
                        capture_output=True, creationflags=engine.NOWIN)
         if not os.path.exists(out) or os.path.getsize(out) == 0:
             raise ConversionError("Could not draw the waveform.")
-        im = Image.open(out); im.load()
-        return im.convert("RGB")
+        with Image.open(out) as im:
+            im.load()
+            return im.convert("RGB")
     finally:
         try:
             os.unlink(out)
@@ -747,26 +857,28 @@ def make_preview(tool_id: str, paths, p: dict):
         return out, ""
     if tool_id == "resize":
         if fam in ("image", "pdf"):
-            im = thumb(src)
-            mode = p.get("mode", "Scale %")
-            if mode == "Scale %":
-                s = max(10, min(800, int(p.get("scale", 100)))) / 100.0
-                tw, th = int(round(im.width * s)), int(round(im.height * s))
+            if fam == "pdf":
+                try:
+                    fz = engine._fitz()
+                    with fz.open(str(src)) as doc:
+                        if len(doc) > 0:
+                            orig_w, orig_h = int(round(doc[0].rect.width)), int(round(doc[0].rect.height))
+                        else:
+                            orig_w, orig_h = 595, 842
+                except Exception:
+                    orig_w, orig_h = 595, 842
             else:
-                ow, oh = im.width, im.height
-                w = int(p.get("width", 0))
-                h = int(p.get("height", 0))
-                if w <= 0 and h <= 0:
-                    tw, th = ow, oh
-                elif w <= 0:
-                    tw, th = int(round(ow * h / oh)), h
-                elif h <= 0:
-                    tw, th = w, int(round(oh * w / ow))
-                else:
-                    tw, th = w, h
-            tw, th = max(1, tw), max(1, th)
+                try:
+                    with engine.load_image(src) as full_im:
+                        orig_w, orig_h = full_im.width, full_im.height
+                except Exception:
+                    im_tmp = thumb(src)
+                    orig_w, orig_h = im_tmp.width, im_tmp.height
+
+            tw, th = _resolve_resize(p, orig_w, orig_h)
+            im = thumb(src)
             from PIL import Image
-            preview = im.resize((min(tw, 500), min(th, 340)), Image.LANCZOS)
+            preview = im.resize((max(1, min(tw, 500)), max(1, min(th, 340))), Image.LANCZOS)
             return preview, f"Output: {tw} × {th} px"
         if fam == "video":
             v_info = probe(src)
@@ -788,7 +900,10 @@ def make_preview(tool_id: str, paths, p: dict):
                     def path(self, n): return tmpdir / n
                 out = compress_image(src, _W(), p, None)
                 new = out.stat().st_size
-                im = Image.open(out); im.thumbnail((500, 340)); im = im.convert("RGBA"); im.load()
+                with Image.open(out) as raw_im:
+                    im = raw_im.convert("RGBA")
+                    im.thumbnail((500, 340))
+                    im.load()
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             return im, f"Original {_hsize(orig)} → {_hsize(new)} ({(1 - new / orig) * 100:.0f}% smaller){note}"

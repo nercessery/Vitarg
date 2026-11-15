@@ -25,7 +25,7 @@ def estimate_conversion(src: str | Path, target: str, settings=None) -> dict:
     if not p.is_file():
         return {
             "src_size": 0, "src_size_str": "0 B", "est_size": 0, "est_size_str": "Unknown",
-            "ratio_pct": 0, "quality": "Standard", "summary": "File not found"
+            "ratio_pct": 0, "quality": "Standard", "summary": "File not found", "status": "error"
         }
 
     src_size = p.stat().st_size
@@ -121,7 +121,10 @@ def estimate_conversion(src: str | Path, target: str, settings=None) -> dict:
             quality = "300 DPI Render"
 
     est_size = max(1024, int(src_size * factor))
-    diff_pct = ((est_size - src_size) / src_size) * 100.0
+    if src_size <= 0:
+        diff_pct = 0.0
+    else:
+        diff_pct = ((est_size - src_size) / src_size) * 100.0
 
     if diff_pct < -5:
         diff_str = f"~{abs(int(diff_pct))}% smaller"
@@ -140,5 +143,6 @@ def estimate_conversion(src: str | Path, target: str, settings=None) -> dict:
         "est_size_str": format_size(est_size),
         "ratio_pct": diff_pct,
         "quality": quality,
-        "summary": summary
+        "summary": summary,
+        "status": "ok"
     }

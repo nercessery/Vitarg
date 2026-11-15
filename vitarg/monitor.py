@@ -77,6 +77,7 @@ class DragMonitor(QObject):
 
     def __init__(self, settings):
         super().__init__()
+        self._lock = threading.Lock()
         self.s = settings
         self.timer = QTimer(self)
         self.timer.setInterval(33)                 # 30 FPS when idle, ramps up to 60 FPS during drags
@@ -93,18 +94,20 @@ class DragMonitor(QObject):
         self.timer.stop()
 
     def _reset(self):
-        self.armed = False
-        self.shown = None                        # kind currently shown
-        self.origin = (0, 0)
-        self.sel: list[str] = []
-        self.suppressed = False
-        self.token = 0
+        with self._lock:
+            self.armed = False
+            self.shown = None                        # kind currently shown
+            self.origin = (0, 0)
+            self.sel: list[str] = []
+            self.suppressed = False
+            self.token = 0
 
     def _query(self, hwnd, cls, token):
         time.sleep(0.12)                         # let Explorer update the selection after mouse-down
         paths = explorer_selection(hwnd, cls)
-        if token == self.token:
-            self.sel = paths
+        with self._lock:
+            if token == self.token:
+                self.sel = list(paths)
 
     def _tick(self):
         if sys.platform != "win32":
@@ -129,10 +132,12 @@ class DragMonitor(QObject):
             hwnd, cls = _fg_info()
             self.armed = cls in EXPLORER_CLASSES
             self.origin = keys.cursor_pos()
-            self.sel = []
-            self.token += 1
+            with self._lock:
+                self.sel = []
+                self.token += 1
+                curr_token = self.token
             if self.armed:
-                threading.Thread(target=self._query, args=(hwnd, cls, self.token), daemon=True).start()
+                threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
             return
         if not self.armed:
             return
@@ -149,9 +154,11 @@ class DragMonitor(QObject):
         x, y = keys.cursor_pos()
         moved = max(abs(x - self.origin[0]), abs(y - self.origin[1]))
         file_drag = _drag_image_present() and moved >= DRAG_THRESHOLD_PX
-        known = bool(self.sel) and moved >= 40
+        with self._lock:
+            current_sel = list(self.sel)
+        known = bool(current_sel) and moved >= 40
         if self.shown is None and not (file_drag or known):
             return
         self.shown = kind
         p = QCursor.pos()
-        self.trigger.emit(kind, list(self.sel), p.x(), p.y())
+        self.trigger.emit(kind, current_sel, p.x(), p.y())

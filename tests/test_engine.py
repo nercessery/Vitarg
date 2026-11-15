@@ -16,13 +16,23 @@ HAS_PANDOC = bool(engine.find_tool("pandoc"))
 
 
 def ff(*a):
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *a], check=True)
+    exe = engine.find_tool("ffmpeg") or "ffmpeg"
+    subprocess.run([exe, "-loglevel", "error", "-y", *a], check=True)
 
 
 class Base(unittest.TestCase):
     def setUp(self):
+        self._orig_appdata = os.environ.get("APPDATA")
         self.tmp = Path(tempfile.mkdtemp())
         self.st = S.Settings()
+
+    def tearDown(self):
+        import shutil
+        if self._orig_appdata is not None:
+            os.environ["APPDATA"] = self._orig_appdata
+        else:
+            os.environ.pop("APPDATA", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def conv(self, src, tgt):
         return engine.convert(src, tgt, self.st)
@@ -44,7 +54,8 @@ class ImageTests(Base):
                 elif tf in ("mp4", "mov", "mkv", "webm"):
                     self.assertTrue(engine.probe(out)["video"], f"{sf}->{tf}")
                 else:
-                    Image.open(out).load()
+                    with Image.open(out) as im_chk:
+                        im_chk.load()
                 self.assertNotEqual(out, src)
 
     def test_collision_naming(self):
@@ -72,7 +83,8 @@ class ImageTests(Base):
         fr = [Image.new("RGB", (40, 40), c) for c in ("red", "green", "blue")]
         fr[0].save(src, save_all=True, append_images=fr[1:], duration=100, loop=0)
         out = self.conv(src, "webp")[0]
-        self.assertEqual(Image.open(out).n_frames, 3)
+        with Image.open(out) as im_out:
+            self.assertEqual(im_out.n_frames, 3)
 
     def test_custom_output_folder(self):
         src = self.tmp / "a.png"; Image.new("RGB", (10, 10)).save(src)
@@ -184,8 +196,9 @@ class TextTests(Base):
     def test_txt_to_images_docx(self):
         t = self.tmp / "t.txt"; t.write_text("line one\n    indented\n" * 30, encoding="utf-8")
         for tf in ("png", "jpg"):
-            im = Image.open(self.conv(t, tf)[0]); im.load()
-            self.assertGreater(im.size[1], 300)
+            with Image.open(self.conv(t, tf)[0]) as im:
+                im.load()
+                self.assertGreater(im.size[1], 300)
         docx = self.conv(t, "docx")[0]
         import docx as dx
         self.assertEqual(dx.Document(str(docx)).paragraphs[0].text, "line one")
@@ -194,10 +207,12 @@ class TextTests(Base):
 @unittest.skipUnless(HAS_FITZ, "PyMuPDF not installed")
 class PdfTests(Base):
     def make_pdf(self, pages=2):
-        d = fitz.open()
-        for i in range(pages):
-            d.new_page(width=612, height=792).insert_text((72, 100), f"Hello page {i + 1}")
-        p = self.tmp / "Report.pdf"; d.save(p); return p
+        with fitz.open() as d:
+            for i in range(pages):
+                d.new_page(width=612, height=792).insert_text((72, 100), f"Hello page {i + 1}")
+            p = self.tmp / "Report.pdf"
+            d.save(p)
+            return p
 
     def test_pdf_routes(self):
         p = self.make_pdf()
@@ -205,16 +220,32 @@ class PdfTests(Base):
         self.assertIn("Hello page 2", txt)
         folder = self.conv(p, "png")[0]
         self.assertEqual(folder.name, "Report PNG Pages")
-        im = Image.open(folder / "Page 001.png"); self.assertEqual(im.size, (2550, 3300))
+        with Image.open(folder / "Page 001.png") as im:
+            self.assertEqual(im.size, (2550, 3300))
         self.assertTrue(zipfile.is_zipfile(self.conv(p, "docx")[0]))
         t = self.tmp / "t.txt"; t.write_text("alpha\nbeta\n")
         pdf = self.conv(t, "pdf")[0]
-        self.assertIn("alpha", fitz.open(pdf)[0].get_text())
+        with fitz.open(pdf) as doc:
+            self.assertIn("alpha", doc[0].get_text())
         im = self.tmp / "i.png"; Image.new("RGB", (100, 100), "blue").save(im)
-        self.assertEqual(len(fitz.open(self.conv(im, "pdf")[0])), 1)
+        with fitz.open(self.conv(im, "pdf")[0]) as doc:
+            self.assertEqual(len(doc), 1)
 
 
 class SettingsTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_appdata = os.environ.get("APPDATA")
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = self.tmp
+
+    def tearDown(self):
+        import shutil
+        if self._orig_appdata is not None:
+            os.environ["APPDATA"] = self._orig_appdata
+        else:
+            os.environ.pop("APPDATA", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
     def test_validate_and_persist(self):
         self.assertEqual(S.validate(["SHIFT"], ["ALT", "SHIFT"])[0], [])
         self.assertTrue(S.validate(["SHIFT"], ["SHIFT"])[0])                  # identical
@@ -225,7 +256,6 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(S.validate(["CTRL", "A", "B"], ["SHIFT"])[0])         # two extras
         self.assertEqual(S.validate(["CTRL", "SHIFT", "Q"], ["ALT", "Q"])[0], [])
         self.assertTrue(S.validate(["SHIFT"], ["ALT", "SHIFT"])[1])           # subset warning
-        os.environ["APPDATA"] = tempfile.mkdtemp()
         s = S.Settings(); s.conv_trigger = ["CTRL", "SHIFT"]; s.jpg_quality = 77; s.save()
         l = S.Settings.load()
         self.assertEqual((l.conv_trigger, l.jpg_quality), (["CTRL", "SHIFT"], 77))

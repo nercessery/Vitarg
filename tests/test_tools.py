@@ -7,12 +7,17 @@ from vitarg import engine, tools, settings as S
 
 
 def ff(*a):
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *a], check=True)
+    exe = engine.find_tool("ffmpeg") or "ffmpeg"
+    subprocess.run([exe, "-loglevel", "error", "-y", *a], check=True)
 
 
 class T(unittest.TestCase):
     def setUp(self):
         self.d = Path(tempfile.mkdtemp()); self.st = S.Settings()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
 
     def photo(self, name="p.jpg", size=(800, 600)):
         random.seed(1)
@@ -37,36 +42,49 @@ class T(unittest.TestCase):
         p = self.photo()
         out = self.run_t("compress", [p], preset="Strong", max_edge="Original")[0]
         self.assertLess(out.stat().st_size, p.stat().st_size)
-        im = Image.open(p); ex = im.getexif(); ex[0x010F] = "SecretCam"; im.save(self.d / "m.jpg", exif=ex)
+        with Image.open(p) as im:
+            ex = im.getexif(); ex[0x010F] = "SecretCam"; im.save(self.d / "m.jpg", exif=ex)
         self.assertIn(b"SecretCam", (self.d / "m.jpg").read_bytes())
         o = self.run_t("metadata", [self.d / "m.jpg"])[0]
-        self.assertNotIn(b"SecretCam", o.read_bytes()); Image.open(o).load()
+        self.assertNotIn(b"SecretCam", o.read_bytes())
+        with Image.open(o) as im_o:
+            im_o.load()
 
     def test_crop_edit_bg_collage_pdf(self):
         p = self.photo("a.png")
         c = self.run_t("crop", [p], box=(10, 20, 410, 320))[0]
-        self.assertEqual(Image.open(c).size, (400, 300))
+        with Image.open(c) as im_c:
+            self.assertEqual(im_c.size, (400, 300))
         _, errs = tools.run_tool("crop", [p], {"box": (0, 0, 9999, 9999)}, self.st)
         self.assertTrue(errs)
         e = self.run_t("edit", [p], brightness=1.5, contrast=1, saturation=1, sharpness=1)[0]
-        self.assertGreater(sum(Image.open(e).convert("L").getdata()), sum(Image.open(p).convert("L").getdata()))
-        t = self.d / "t.png"; Image.new("RGBA", (50, 50), (0, 0, 0, 0)).save(t)
+        with Image.open(e) as im_e, Image.open(p) as im_p:
+            self.assertGreater(sum(im_e.convert("L").getdata()), sum(im_p.convert("L").getdata()))
+        t = self.d / "t.png"
+        with Image.new("RGBA", (50, 50), (0, 0, 0, 0)) as im_t:
+            im_t.save(t)
         b = self.run_t("addbg", [t], color="#FF0000")[0]
-        self.assertEqual(Image.open(b).convert("RGB").getpixel((5, 5)), (255, 0, 0))
+        with Image.open(b) as im_b:
+            self.assertEqual(im_b.convert("RGB").getpixel((5, 5)), (255, 0, 0))
         # background layer with padding: visible even on an opaque photo, and the preview matches the saved result
         bp = self.run_t("addbg", [p], color="#00FF00", padding=10)[0]
-        self.assertEqual(Image.open(bp).size, (800 + 160, 600 + 160))
-        self.assertEqual(Image.open(bp).getpixel((2, 2)), (0, 255, 0))
-        prev = tools.preview_image("addbg", Image.open(p).convert("RGBA"), {"color": "#00FF00", "padding": 10})
-        self.assertEqual(prev.size, Image.open(bp).size)
-        pe = tools.preview_image("edit", Image.open(p).convert("RGBA"), {"brightness": 1.5})
-        ee = Image.open(self.run_t("edit", [p], brightness=1.5, contrast=1, saturation=1, sharpness=1)[0])
-        self.assertEqual(pe.convert("RGB").getpixel((100, 100)), ee.convert("RGB").getpixel((100, 100)))
+        with Image.open(bp) as im_bp:
+            self.assertEqual(im_bp.size, (800 + 160, 600 + 160))
+            self.assertEqual(im_bp.getpixel((2, 2)), (0, 255, 0))
+            with Image.open(p) as im_p:
+                prev = tools.preview_image("addbg", im_p.convert("RGBA"), {"color": "#00FF00", "padding": 10})
+            self.assertEqual(prev.size, im_bp.size)
+        with Image.open(p) as im_p:
+            pe = tools.preview_image("edit", im_p.convert("RGBA"), {"brightness": 1.5})
+        with Image.open(self.run_t("edit", [p], brightness=1.5, contrast=1, saturation=1, sharpness=1)[0]) as ee:
+            self.assertEqual(pe.convert("RGB").getpixel((100, 100)), ee.convert("RGB").getpixel((100, 100)))
         col = self.run_t("collage", [p, self.photo("b.jpg")], cols=2, spacing=10, bg="#000000")[0]
-        self.assertEqual(Image.open(col).size, (1630, 820))
+        with Image.open(col) as im_col:
+            self.assertEqual(im_col.size, (1630, 820))
         pdf = self.run_t("create_pdf", [p, self.photo("c.jpg")])[0]
         self.assertTrue(pdf.read_bytes().startswith(b"%PDF"))
 
+    @unittest.skipUnless(engine.find_tool("ffmpeg") is not None, "ffmpeg not available")
     def test_media(self):
         v = self.d / "v.mp4"
         ff("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24:duration=4", "-f", "lavfi", "-i", "sine=duration=4",
@@ -78,7 +96,8 @@ class T(unittest.TestCase):
         sp = self.run_t("speed", [v], factor=2)[0]
         self.assertAlmostEqual(engine.probe(sp)["duration"], 2, delta=0.4)
         snap = self.run_t("snapshot", [v], time=1)[0]
-        self.assertEqual(Image.open(snap).size, (320, 240))
+        with Image.open(snap) as im_snap:
+            self.assertEqual(im_snap.size, (320, 240))
         co = self.run_t("compress", [v], preset="Balanced")[0]; self.assertTrue(engine.probe(co)["video"])
         m = self.run_t("metadata", [v])[0]
         self.assertNotIn(b"Secret", m.read_bytes())
@@ -90,6 +109,7 @@ class T(unittest.TestCase):
         at = self.run_t("trim", [a], start=0.5, end=1.5)[0]; self.assertAlmostEqual(engine.probe(at)["duration"], 1, delta=0.2)
         _, errs = tools.run_tool("trim", [a], {"start": 2, "end": 1}, self.st); self.assertTrue(errs)
 
+    @unittest.skipUnless(engine.find_tool("ffmpeg") is not None, "ffmpeg not available")
     def test_previews(self):
         a, b = self.photo("a.jpg"), self.photo("b.png", (300, 500))
         im, _ = tools.make_preview("edit", [a], {"brightness": 1.4}); self.assertEqual(im.mode in ("RGB", "RGBA"), True)
@@ -119,20 +139,60 @@ class T(unittest.TestCase):
         p = self.photo("orig.jpg", size=(800, 600))
         # Scale % test: 50%
         r50 = self.run_t("resize", [p], mode="Scale %", scale=50)[0]
-        self.assertEqual(Image.open(r50).size, (400, 300))
+        with Image.open(r50) as im_r50:
+            self.assertEqual(im_r50.size, (400, 300))
         # Scale % test: 200%
         r200 = self.run_t("resize", [p], mode="Scale %", scale=200)[0]
-        self.assertEqual(Image.open(r200).size, (1600, 1200))
+        with Image.open(r200) as im_r200:
+            self.assertEqual(im_r200.size, (1600, 1200))
         # Exact pixels test: 640x480
         rexact = self.run_t("resize", [p], mode="Exact pixels", width=640, height=480)[0]
-        self.assertEqual(Image.open(rexact).size, (640, 480))
+        with Image.open(rexact) as im_rexact:
+            self.assertEqual(im_rexact.size, (640, 480))
         # Exact pixels: width only (aspect ratio preserved)
         rauto = self.run_t("resize", [p], mode="Exact pixels", width=400, height=0)[0]
-        self.assertEqual(Image.open(rauto).size, (400, 300))
+        with Image.open(rauto) as im_rauto:
+            self.assertEqual(im_rauto.size, (400, 300))
         # Preview check
         prev, txt = tools.make_preview("resize", [p], {"mode": "Scale %", "scale": 50})
         self.assertIsNotNone(prev)
         self.assertIn("400 × 300", txt)
+
+    def test_multipage_tiff_handles_closed_on_error(self):
+        tiff_dir = Path(tempfile.mkdtemp())
+        try:
+            tiff_path = tiff_dir / "multi.tiff"
+            f1 = Image.new("RGB", (64, 64), (255, 0, 0))
+            f2 = Image.new("RGB", (64, 64), (0, 255, 0))
+            f3 = Image.new("RGB", (64, 64), (0, 0, 255))
+            f1.save(tiff_path, save_all=True, append_images=[f2, f3])
+            f1.close(); f2.close(); f3.close()
+
+            # Test preview raises ConversionError and leaves no open file handles
+            with self.assertRaises(engine.ConversionError):
+                tools.make_preview("compress", [tiff_path], {"preset": "Balanced"})
+
+            # Immediate unlink must succeed without WinError 32
+            tiff_path.unlink()
+            self.assertFalse(tiff_path.exists())
+
+            # Test run_tool across tools on multi-page TIFF
+            for tid in ("compress", "crop", "edit", "addbg", "metadata"):
+                f1 = Image.new("RGB", (64, 64), (255, 0, 0))
+                f2 = Image.new("RGB", (64, 64), (0, 255, 0))
+                f1.save(tiff_path, save_all=True, append_images=[f2])
+                f1.close(); f2.close()
+
+                outs, errs = tools.run_tool(tid, [tiff_path],
+                                            {"preset": "Balanced", "box": (0, 0, 32, 32),
+                                             "brightness": 1.0, "color": "#FFFFFF"}, self.st)
+                self.assertEqual(len(errs), 1)
+                self.assertIn("Animated/multi-page images are not supported", errs[0][1])
+                tiff_path.unlink()
+                self.assertFalse(tiff_path.exists())
+        finally:
+            import shutil
+            shutil.rmtree(tiff_dir, ignore_errors=False)
 
 
 if __name__ == "__main__":

@@ -78,10 +78,22 @@ class Keys(unittest.TestCase):
 
 
 class AppearanceSlots(unittest.TestCase):
-    def test_slots_roundtrip_and_defaults(self):
+    def setUp(self):
         import os, tempfile
+        self._orig_appdata = os.environ.get("APPDATA")
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = self.tmp
+
+    def tearDown(self):
+        import os, shutil
+        if self._orig_appdata is not None:
+            os.environ["APPDATA"] = self._orig_appdata
+        else:
+            os.environ.pop("APPDATA", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_slots_roundtrip_and_defaults(self):
         from vitarg import settings as S
-        os.environ["APPDATA"] = tempfile.mkdtemp()
         s = S.Settings()
         self.assertEqual((s.tint, s.opacity), ("#12111A", 75))          # dark glass default
         self.assertEqual(len(s.appearance_slots), 3)
@@ -180,6 +192,10 @@ class NewFeaturesTests(unittest.TestCase):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp())
 
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
     def test_undo_manager_delete_created(self):
         from vitarg.undo import UndoManager
         mgr = UndoManager()
@@ -226,6 +242,71 @@ class NewFeaturesTests(unittest.TestCase):
         # Renaming to same name does not fail or error
         same_paths = apply_custom_rename(new_paths, "final_photo")
         self.assertEqual(same_paths, new_paths)
+
+    def test_auto_rename_directory_and_extensionless_no_trailing_dot(self):
+        from vitarg.rename import format_rename, apply_custom_rename
+        # Extensionless file or directory has ext=""
+        res = format_rename(self.tmp / "folder", "TargetDir", "")
+        self.assertEqual(res, "TargetDir")
+        self.assertFalse(res.endswith("."))
+
+        # Trailing dot in custom name itself is stripped
+        res_dot = format_rename(self.tmp / "folder", "TargetDir.", "")
+        self.assertEqual(res_dot, "TargetDir")
+
+        # In apply_custom_rename for directory
+        d = self.tmp / "SubDir"
+        d.mkdir()
+        renamed = apply_custom_rename([str(d)], "NewSubDir")
+        self.assertEqual(Path(renamed[0]).name, "NewSubDir")
+        self.assertTrue(Path(renamed[0]).is_dir())
+
+    def test_auto_rename_targz_collision(self):
+        from vitarg.rename import format_rename, apply_custom_rename
+        t1 = self.tmp / "archive.tar.gz"
+        t1.write_bytes(b"1")
+        t2 = self.tmp / "other.tar.gz"
+        t2.write_bytes(b"2")
+        # Renaming t2 to "archive" should produce "archive_02.tar.gz", not "archive.tar_02.tar.gz"
+        renamed = apply_custom_rename([str(t2)], "archive")
+        self.assertEqual(Path(renamed[0]).name, "archive_02.tar.gz")
+        self.assertTrue(Path(renamed[0]).exists())
+
+    def test_undo_manager_prune_stale_backups(self):
+        import time, os
+        from vitarg.undo import UndoManager
+        mgr = UndoManager()
+        stale_file = mgr._backup_dir / "stale_test.bak"
+        stale_file.write_text("old")
+        old_mtime = time.time() - (8 * 86400)  # 8 days old
+        os.utime(stale_file, (old_mtime, old_mtime))
+        recent_file = mgr._backup_dir / "recent_test.bak"
+        recent_file.write_text("new")
+        pruned = mgr.prune_stale_backups(max_age_days=7)
+        self.assertGreaterEqual(pruned, 1)
+        self.assertFalse(stale_file.exists())
+        self.assertTrue(recent_file.exists())
+        recent_file.unlink(missing_ok=True)
+
+    def test_workspace_publish_overwrite_backup(self):
+        from vitarg import engine, settings as S
+        from vitarg.undo import undo_manager
+        st = S.Settings()
+        st.overwrite = "overwrite"
+        st.output_folder = str(self.tmp)
+        target = self.tmp / "overwritable.txt"
+        target.write_text("original before overwrite")
+
+        with engine.Workspace(st, target) as ws:
+            p = ws.path("overwritable.txt")
+            p.write_text("new content overwriting original")
+            pub = ws.publish()
+
+        self.assertEqual(target.read_text(), "new content overwriting original")
+        self.assertTrue(undo_manager.can_undo())
+        ok, msg, affected = undo_manager.undo()
+        self.assertTrue(ok)
+        self.assertEqual(target.read_text(), "original before overwrite")
 
     def test_job_window_accepts_custom_name(self):
         try:
@@ -275,6 +356,10 @@ class LinuxPlatformTests(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_settings_path_linux_xdg(self):
         import os

@@ -181,6 +181,11 @@ class Workspace:
         for item in sorted(self.work.iterdir()):
             final = unique_name(self.outdir, item.name, over)
             if over and final.exists():
+                try:
+                    from .undo import undo_manager
+                    undo_manager.record(f"Overwrite {final.name}", [str(final)], overwritten_targets=[final])
+                except Exception:
+                    pass
                 shutil.rmtree(final) if final.is_dir() else final.unlink()
             os.replace(item, final)
             if not final.exists():                       # confirm with a fresh read
@@ -348,20 +353,26 @@ def load_image(path):
         data = path.read_bytes()
         if data[:2] == b"\x1f\x8b":
             data = gzip.decompress(data)
-        doc = fz.open(stream=data, filetype="svg")
-        pix = doc[0].get_pixmap(alpha=True)
-        im = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
-        return im
+        with fz.open(stream=data, filetype="svg") as doc:
+            pix = doc[0].get_pixmap(alpha=True)
+            im = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+            return im
     if f == "heic":
         try:
             import pillow_heif
             pillow_heif.register_heif_opener()
         except ImportError:
             raise ConversionError("HEIC support needs pillow-heif, which is not installed.")
+    im = None
     try:
         im = Image.open(path)
         im.load()
     except Exception as e:
+        if im is not None:
+            try:
+                im.close()
+            except Exception:
+                pass
         raise ConversionError(f"Cannot read image: {e}")
     return im
 
@@ -378,68 +389,74 @@ def _flatten(im, bg=(255, 255, 255)):
 
 def convert_image(src: Path, target: str, out: Path, settings) -> None:
     from PIL import Image, ImageOps
-    im = load_image(src)
-    n = getattr(im, "n_frames", 1)
-    sf = fmt_of(src)
-    animated_ok = target in ("gif", "webp", "tiff") and n > 1
-    if not animated_ok:
+    raw_im = load_image(src)
+    try:
+        n = getattr(raw_im, "n_frames", 1)
+        sf = fmt_of(src)
+        animated_ok = target in ("gif", "webp", "tiff") and n > 1
+        if not animated_ok:
+            try:
+                raw_im.seek(0)
+            except Exception:
+                pass
+        if target == "docx":
+            _images_to_docx([raw_im], out)
+            return
+        if animated_ok:
+            frames, durs = [], []
+            for i in range(n):
+                raw_im.seek(i)
+                durs.append(raw_im.info.get("duration", 100))
+                fr = ImageOps.exif_transpose(raw_im).convert("RGBA")
+                frames.append(fr if target != "tiff" else _flatten(fr))
+            kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
+            if target == "gif":
+                kw["disposal"] = 2
+            if target == "webp":
+                kw["quality"] = settings.webp_quality
+            if target == "tiff":
+                kw = {"save_all": True, "append_images": frames[1:], "compression": "tiff_lzw"}
+            frames[0].save(out, target.upper() if target != "tiff" else "TIFF", **kw)
+        else:
+            im = ImageOps.exif_transpose(raw_im)
+            if target == "jpg":
+                _flatten(im).save(out, "JPEG", quality=settings.jpg_quality, optimize=True, subsampling=0 if settings.jpg_quality >= 90 else 2)
+            elif target == "png":
+                (im if im.mode in ("RGB", "RGBA", "L", "LA", "P") else im.convert("RGBA")).save(out, "PNG", optimize=True)
+            elif target == "webp":
+                im.convert("RGBA").save(out, "WEBP", quality=settings.webp_quality, method=6)
+            elif target == "bmp":
+                _flatten(im).save(out, "BMP")
+            elif target == "tiff":
+                (im if im.mode in ("RGB", "RGBA", "L") else im.convert("RGBA")).save(out, "TIFF", compression="tiff_lzw")
+            elif target == "gif":
+                im.convert("RGBA").save(out, "GIF")
+            elif target == "ico":
+                ic = im.convert("RGBA")
+                ic.thumbnail((256, 256))
+                sizes = [s for s in (16, 24, 32, 48, 64, 128, 256) if s <= max(ic.size)] or [ic.size[0]]
+                ic.save(out, "ICO", sizes=[(s, s) for s in sizes])
+            elif target == "pdf":
+                _flatten(im).save(out, "PDF", resolution=float(im.info.get("dpi", (150, 150))[0] or 150))
+            elif target == "heic":
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+                im.convert("RGBA").save(out, "HEIF", quality=90)
+            else:
+                raise ConversionError(f"Unsupported image target {target}")
+    finally:
         try:
-            im.seek(0)
+            raw_im.close()
         except Exception:
             pass
-    if target == "docx":
-        _images_to_docx([im], out)
-        return
-    if animated_ok:
-        frames, durs = [], []
-        for i in range(n):
-            im.seek(i)
-            durs.append(im.info.get("duration", 100))
-            fr = ImageOps.exif_transpose(im).convert("RGBA")
-            frames.append(fr if target != "tiff" else _flatten(fr))
-        kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
-        if target == "gif":
-            kw["disposal"] = 2
-        if target == "webp":
-            kw["quality"] = settings.webp_quality
-        if target == "tiff":
-            kw = {"save_all": True, "append_images": frames[1:], "compression": "tiff_lzw"}
-        frames[0].save(out, target.upper() if target != "tiff" else "TIFF", **kw)
-    else:
-        im = ImageOps.exif_transpose(im)
-        if target == "jpg":
-            _flatten(im).save(out, "JPEG", quality=settings.jpg_quality, optimize=True, subsampling=0 if settings.jpg_quality >= 90 else 2)
-        elif target == "png":
-            (im if im.mode in ("RGB", "RGBA", "L", "LA", "P") else im.convert("RGBA")).save(out, "PNG", optimize=True)
-        elif target == "webp":
-            im.convert("RGBA").save(out, "WEBP", quality=settings.webp_quality, method=6)
-        elif target == "bmp":
-            _flatten(im).save(out, "BMP")
-        elif target == "tiff":
-            (im if im.mode in ("RGB", "RGBA", "L") else im.convert("RGBA")).save(out, "TIFF", compression="tiff_lzw")
-        elif target == "gif":
-            im.convert("RGBA").save(out, "GIF")
-        elif target == "ico":
-            ic = im.convert("RGBA")
-            ic.thumbnail((256, 256))
-            sizes = [s for s in (16, 24, 32, 48, 64, 128, 256) if s <= max(ic.size)] or [ic.size[0]]
-            ic.save(out, "ICO", sizes=[(s, s) for s in sizes])
-        elif target == "pdf":
-            _flatten(im).save(out, "PDF", resolution=float(im.info.get("dpi", (150, 150))[0] or 150))
-        elif target == "heic":
-            import pillow_heif
-            pillow_heif.register_heif_opener()
-            im.convert("RGBA").save(out, "HEIF", quality=90)
-        else:
-            raise ConversionError(f"Unsupported image target {target}")
     # validate by decoding again
     try:
         if target == "pdf":
             if out.stat().st_size < 100:
                 raise ConversionError("Validation failed: PDF is empty.")
         elif target != "docx":
-            chk = Image.open(out)
-            chk.load()
+            with Image.open(out) as chk:
+                chk.load()
     except ConversionError:
         raise
     except Exception as e:
@@ -556,35 +573,36 @@ def pdf_to_text(src: Path) -> str:
         doc = fz.open(str(src))
     except Exception as e:
         raise ConversionError(f"Cannot open PDF: {e}")
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    pages = [p.get_text("text") for p in doc]
-    if not any(t.strip() for t in pages):
-        raise ConversionError("This PDF has no selectable text (it looks scanned). OCR is required and not supported.")
-    return "\n\n".join(pages)
+    with doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        pages = [p.get_text("text") for p in doc]
+        if not any(t.strip() for t in pages):
+            raise ConversionError("This PDF has no selectable text (it looks scanned). OCR is required and not supported.")
+        return "\n\n".join(pages)
 
 
 def pdf_to_images(src: Path, fmt: str, ws: Workspace, settings, progress) -> None:
     from PIL import Image
     fz = _fitz()
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    n = len(doc)
-    if n == 0:
-        raise ConversionError("The PDF has no pages.")
-    target_dir = ws.work if n == 1 else ws.path(f"{src.stem} {fmt.upper()} Pages")
-    if n > 1:
-        target_dir.mkdir()
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=300, alpha=False)
-        im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        name = f"{src.stem}.{fmt}" if n == 1 else f"Page {i + 1:03d}.{fmt}"
-        if fmt == "jpg":
-            im.save(target_dir / name, "JPEG", quality=settings.jpg_quality, dpi=(300, 300))
-        else:
-            im.save(target_dir / name, "PNG", optimize=True, dpi=(300, 300))
-        progress((i + 1) / n)
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        n = len(doc)
+        if n == 0:
+            raise ConversionError("The PDF has no pages.")
+        target_dir = ws.work if n == 1 else ws.path(f"{src.stem} {fmt.upper()} Pages")
+        if n > 1:
+            target_dir.mkdir()
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=300, alpha=False)
+            im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            name = f"{src.stem}.{fmt}" if n == 1 else f"Page {i + 1:03d}.{fmt}"
+            if fmt == "jpg":
+                im.save(target_dir / name, "JPEG", quality=settings.jpg_quality, dpi=(300, 300))
+            else:
+                im.save(target_dir / name, "PNG", optimize=True, dpi=(300, 300))
+            progress((i + 1) / n)
 
 
 def pdf_to_docx(src: Path, out: Path) -> None:
@@ -592,21 +610,21 @@ def pdf_to_docx(src: Path, out: Path) -> None:
     fz = _fitz()
     from docx import Document
     from docx.shared import Inches
-    doc = fz.open(str(src))
-    if doc.needs_pass:
-        raise ConversionError("The PDF is password protected.")
-    d = Document()
-    for i, page in enumerate(doc):
-        txt = page.get_text("text").strip()
-        if txt:
-            for para in re.split(r"\n\s*\n", txt):
-                d.add_paragraph(" ".join(para.split("\n")))
-        else:
-            pix = page.get_pixmap(dpi=150)
-            d.add_picture(io.BytesIO(pix.tobytes("png")), width=Inches(6.5))
-        if i < len(doc) - 1:
-            d.add_page_break()
-    d.save(out)
+    with fz.open(str(src)) as doc:
+        if doc.needs_pass:
+            raise ConversionError("The PDF is password protected.")
+        d = Document()
+        for i, page in enumerate(doc):
+            txt = page.get_text("text").strip()
+            if txt:
+                for para in re.split(r"\n\s*\n", txt):
+                    d.add_paragraph(" ".join(para.split("\n")))
+            else:
+                pix = page.get_pixmap(dpi=150)
+                d.add_picture(io.BytesIO(pix.tobytes("png")), width=Inches(6.5))
+            if i < len(doc) - 1:
+                d.add_page_break()
+        d.save(out)
 
 
 def convert_document(src: Path, sf: str, target: str, ws: Workspace, settings, progress) -> None:

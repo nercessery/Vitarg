@@ -1,6 +1,6 @@
 """File Inspector: analyzes and displays detailed metadata, resolution, size, codecs, and EXIF tags."""
 from __future__ import annotations
-import datetime, hashlib, math, os, subprocess, sys
+import datetime, hashlib, math, os, subprocess, sys, threading
 from pathlib import Path
 from typing import Optional
 
@@ -8,7 +8,7 @@ from . import engine
 from .estimator import format_size
 
 try:
-    from PySide6.QtCore import Qt, QPointF, QRectF
+    from PySide6.QtCore import Qt, QPointF, QRectF, QThread, Signal
     from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPixmap
     from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
                                    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
@@ -19,18 +19,30 @@ except ImportError:
     _HAS_QT = False
     class Panel:
         def __init__(self, *a, **k): pass
+    class QThread:
+        def __init__(self, parent=None): pass
+        def start(self): pass
+        def isRunning(self): return False
+        def wait(self, ms=0): pass
+    def Signal(*a, **k):
+        class _Sig:
+            def connect(self, fn): pass
+            def emit(self, *a, **k): pass
+        return _Sig()
     PURPLE = None
     TEXT = None
     OPACITY = 0.75
 
 
-def compute_sha256(path: Path, max_bytes: int = 25 * 1024 * 1024) -> str:
+def compute_sha256(path: Path, max_bytes: int = 25 * 1024 * 1024, cancel_event: Optional[threading.Event] = None) -> str:
     """Compute SHA-256 hash (up to max_bytes for speed on huge files)."""
     try:
         h = hashlib.sha256()
         with open(path, "rb") as f:
             read = 0
             while chunk := f.read(65536):
+                if cancel_event and cancel_event.is_set():
+                    return "Calculation cancelled"
                 h.update(chunk)
                 read += len(chunk)
                 if read >= max_bytes:
@@ -40,7 +52,24 @@ def compute_sha256(path: Path, max_bytes: int = 25 * 1024 * 1024) -> str:
         return f"Error: {e}"
 
 
-def get_file_info(file_path: str | Path) -> dict:
+class HashThread(QThread):
+    finished = Signal(str)
+
+    def __init__(self, path: Path, max_bytes: int = 25 * 1024 * 1024, parent=None):
+        super().__init__(parent)
+        self.path = Path(path)
+        self.max_bytes = max_bytes
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def run(self):
+        result = compute_sha256(self.path, self.max_bytes, self.cancel_event)
+        self.finished.emit(result)
+
+
+def get_file_info(file_path: str | Path, compute_hash: bool = True) -> dict:
     """Collect deep metadata, resolution, codecs, and format properties."""
     p = Path(file_path).resolve()
     if not p.exists():
@@ -61,7 +90,7 @@ def get_file_info(file_path: str | Path) -> dict:
         "size_str": f"{format_size(stat.st_size)} ({stat.st_size:,} bytes)",
         "created": datetime.datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
         "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        "sha256": compute_sha256(p),
+        "sha256": compute_sha256(p) if compute_hash else "Computing in background...",
         "media": {},
         "metadata": {},
     }
@@ -141,7 +170,8 @@ class InspectorDialog(Panel):
     def __init__(self, file_path: str | Path, parent=None):
         super().__init__("File Inspector", 560, parent)
         self.file_path = Path(file_path)
-        self.info = get_file_info(self.file_path)
+        self.hash_thread: Optional[HashThread] = None
+        self.info = get_file_info(self.file_path, compute_hash=False)
 
         # File header card
         header_card = QWidget()
@@ -184,6 +214,7 @@ class InspectorDialog(Panel):
             ("SHA-256 Checksum", self.info.get("sha256", "")),
         ])
         t_lay1.addWidget(table1)
+        self._sha_item = table1.item(6, 1)
         self.tabs.addTab(tab_gen, "General")
 
         # 2. Dimensions & Stream Details Tab
@@ -229,6 +260,35 @@ class InspectorDialog(Panel):
         btn_row.addStretch(1)
         btn_row.addWidget(close_btn)
         self.body.addLayout(btn_row)
+
+        if _HAS_QT and self.file_path.is_file():
+            self.hash_thread = HashThread(self.file_path)
+            self.hash_thread.finished.connect(self._on_hash_computed)
+            self.hash_thread.start()
+
+    def _on_hash_computed(self, digest: str):
+        self.info["sha256"] = digest
+        if hasattr(self, "_sha_item") and self._sha_item is not None:
+            self._sha_item.setText(digest)
+            self._sha_item.setToolTip(digest)
+
+    def closeEvent(self, e):
+        if hasattr(self, "hash_thread") and self.hash_thread and self.hash_thread.isRunning():
+            self.hash_thread.cancel()
+            self.hash_thread.wait(1000)
+        super().closeEvent(e)
+
+    def reject(self):
+        if hasattr(self, "hash_thread") and self.hash_thread and self.hash_thread.isRunning():
+            self.hash_thread.cancel()
+            self.hash_thread.wait(1000)
+        super().reject()
+
+    def accept(self):
+        if hasattr(self, "hash_thread") and self.hash_thread and self.hash_thread.isRunning():
+            self.hash_thread.cancel()
+            self.hash_thread.wait(1000)
+        super().accept()
 
     def _make_table(self, items: list[tuple[str, str]]) -> QTableWidget:
         tbl = QTableWidget(len(items), 2)

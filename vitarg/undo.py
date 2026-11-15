@@ -37,6 +37,28 @@ class UndoManager:
             self._backup_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
+        self.prune_stale_backups()
+
+    def prune_stale_backups(self, max_age_days: int = 7) -> int:
+        """Remove any backup file or folder older than max_age_days (default 7 days)."""
+        if not self._backup_dir.exists():
+            return 0
+        cutoff = time.time() - (max_age_days * 86400)
+        removed = 0
+        try:
+            for item in self._backup_dir.iterdir():
+                try:
+                    if item.stat().st_mtime < cutoff:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink(missing_ok=True)
+                        removed += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return removed
 
     @classmethod
     def get(cls) -> UndoManager:
@@ -48,6 +70,10 @@ class UndoManager:
                overwritten_targets: Optional[list[str]] = None) -> UndoAction:
         backups = []
         if overwritten_targets:
+            try:
+                self._backup_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
             for tgt in overwritten_targets:
                 tp = Path(tgt)
                 if tp.exists():
