@@ -701,6 +701,8 @@ def safe_extract(src: Path, dest: Path) -> None:
                 check(m.name)
                 if m.issym() or m.islnk():
                     raise ConversionError(f"Links inside archives are not supported: {m.name}")
+                if m.ischr() or m.isblk() or m.isfifo() or m.isdev() or not (m.isfile() or m.isdir()):
+                    raise ConversionError(f"Special files inside archives are not supported: {m.name}")
             t.extractall(dest)
     elif f == "gz":
         name = src.name[:-3] if src.name.lower().endswith(".gz") else src.stem
