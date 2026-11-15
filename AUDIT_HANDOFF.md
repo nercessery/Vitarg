@@ -21,7 +21,7 @@ In strict compliance with the project's Integrity Mandate:
 
 ### High-Level Milestone & Verification Summary
 - **Features Verified**: 27 / 27 Features operational without regression.
-- **Bugs Resolved**: 20 Confirmed Bugs (BUG-01 through BUG-20, including BUG-11b) fully resolved.
+- **Bugs Resolved**: 21 Confirmed Bugs (BUG-01 through BUG-21, including BUG-11b) fully resolved.
 - **Test Suite Pass Rate**: **194 / 194 PASS (100%)** in 14.84 seconds with 0 failures, 0 errors, and 0 warnings.
 - **Windows Executable**: PyInstaller standalone bundle (`dist/Vitarg/Vitarg.exe`, 786.06 MB) verified with offscreen `--selftest` returning **Exit Code 0** (`selftest ok; missing tools: none`).
 - **CI Parity**: `.github/workflows/build.yml` and `scripts/build.ps1` configured for full test suite discovery and strict exit code enforcement.
@@ -399,6 +399,12 @@ An exhaustive register of all 19 identified defects (plus sub-defect BUG-11b), d
 - **Root Cause**: `safe_extract()` only rejected symlinks and hardlinks (`m.issym() or m.islnk()`). On Windows under Python 3.12 in CI, `tarfile.extractall()` does not raise an exception when encountering FIFO or special device entries, causing `test_tier5_archive_07_tar_fifo_special_file_rejection` to fail with "(ConversionError, tarfile.SpecialFileError, Exception) not raised".
 - **Fix Applied**: Added explicit detection in TAR extraction: `if m.ischr() or m.isblk() or m.isfifo() or m.isdev() or not (m.isfile() or m.isdir()): raise ConversionError(f"Special files inside archives are not supported: {m.name}")`.
 - **Verification**: Tested in `tests/test_e2e_opaque.py::test_tier5_archive_07_tar_fifo_special_file_rejection`. Confirmed immediate `ConversionError` rejection.
+
+#### BUG-21: POSIX / Linux Archive Path Traversal Defense (Backslash, UNC, Absolute Drive)
+- **Location**: `vitarg/engine.py:689` (`safe_extract`)
+- **Root Cause**: On Linux/POSIX, backslashes (`\`) are treated as normal filename characters rather than path separators, and drive letters (`C:`) or UNC paths (`\\127.0.0.1\share`) are treated as relative filenames. Consequently, `(dest / name).resolve()` remained inside `dest`, allowing `..\..\escaped.txt`, `C:/escaped.txt`, and UNC paths to pass without raising `ConversionError`.
+- **Fix Applied**: Upgraded `check(name)` to explicitly reject leading slashes/backslashes, colons/drive letters (`re.match(r"^[a-zA-Z]:", name) or ":" in name`), and normalized backslashes to forward slashes before path resolution across all platforms.
+- **Verification**: Tested in `tests/test_e2e_opaque.py` (`test_tier5_archive_01_zip_backslash_traversal_defense`, `test_tier5_archive_02_absolute_drive_traversal_defense`, `test_tier5_archive_03_unc_path_traversal_defense`). All pass with `ConversionError("Unsafe path in archive: ...")`.
 
 ---
 

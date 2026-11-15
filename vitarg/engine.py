@@ -687,8 +687,18 @@ def safe_extract(src: Path, dest: Path) -> None:
     root = dest.resolve()
 
     def check(name):
-        p = (dest / name).resolve()
-        if root != p and root not in p.parents:
+        if not name:
+            return
+        if name.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", name) or ":" in name:
+            raise ConversionError(f"Unsafe path in archive: {name}")
+        normalized = name.replace("\\", "/")
+        try:
+            p = (dest / normalized).resolve()
+            if root != p and root not in p.parents:
+                raise ConversionError(f"Unsafe path in archive: {name}")
+        except ConversionError:
+            raise
+        except Exception:
             raise ConversionError(f"Unsafe path in archive: {name}")
     if f == "zip":
         with zipfile.ZipFile(src) as z:
