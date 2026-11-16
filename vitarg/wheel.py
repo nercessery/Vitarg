@@ -1,13 +1,14 @@
 """The radial picker: a translucent always-on-top window that is an OLE drop target for files."""
-import math, os, sys
+import math, os, sys, time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtCore import (Qt, QPoint, QPointF, QRectF, QSize, Signal, Property,
+                            QPropertyAnimation, QEasingCurve, QTimer, QEvent)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPainterPathStroker, QPen, QBrush,
                            QLinearGradient, QRadialGradient, QGuiApplication, QFontMetricsF)
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 
-from . import engine, tools, geometry as geo
+from . import engine, tools, geometry as geo, keys
 from .icons import draw_icon
 from .engine import app_dir
 from . import glass
@@ -21,6 +22,8 @@ R_IN = 88.0                        # inner edge of petals
 R_CORE = 82.0                      # centre disc
 GAP_PX = 9.0                       # visual gap between petals
 ROUND = 13.0                       # petal corner rounding
+
+DEFAULT_CONV_FALLBACK = ["mp4", "mp3", "jpg", "png", "webp", "pdf", "gif", "wav", "docx", "zip"]
 
 
 class Wheel(QWidget):
@@ -36,7 +39,7 @@ class Wheel(QWidget):
         self._shape_cache = []
         self.interactive = False
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
-                            Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint)
+                            Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAcceptDrops(True)
@@ -63,7 +66,19 @@ class Wheel(QWidget):
         self._font_cap_large = QFont(self._font_label)
         self._font_cap_large.setPointSizeF(13)
         self._layout_cache = []
+
+        # Interactive dismissal & activation tracking
+        self._shown_time = 0.0
+        self._was_activated = False
+        self._mouse_pressed_initial = False
+        self._interactive_timer = QTimer(self)
+        self._interactive_timer.setInterval(40)
+        self._interactive_timer.timeout.connect(self._poll_interactive)
+
         theme.bus.changed.connect(self.update)          # appearance edits show up instantly
+
+    def sizeHint(self):
+        return QSize(SIZE, SIZE)
 
     # animatable property -------------------------------------------------
     def getScale(self): return self._scale
@@ -74,9 +89,11 @@ class Wheel(QWidget):
     def set_content(self, kind: str, paths: list[str]):
         self.kind, self.paths, self.hover = kind, list(paths), -1
         if kind == "conv":
-            self.items = [(t, t.upper(), "") for t in engine.common_targets(paths)][:10]
+            targets = engine.common_targets(paths) if paths else DEFAULT_CONV_FALLBACK
+            self.items = [(t, t.upper(), "") for t in targets][:16]
         else:
-            self.items = [(t.id, t.label, t.id) for t in tools.tools_for(paths)][:10]
+            tool_list = tools.tools_for(paths) if paths else [t for t in tools.TOOLS if not t.multi][:16]
+            self.items = [(t.id, t.label, t.id) for t in tool_list][:16]
         self._rebuild()
         self.update()
 
@@ -86,6 +103,15 @@ class Wheel(QWidget):
         self._layout_cache = []
         c = QPointF(SIZE / 2, SIZE / 2)
         mid_r = (R_IN + R_OUT) / 2
+
+        # Scale font dynamically when n > 8 to prevent label crowding
+        if n > 8:
+            self._font_tool.setPointSizeF(7.5)
+            self._font_tool.setLetterSpacing(QFont.AbsoluteSpacing, 0.4)
+        else:
+            self._font_tool.setPointSizeF(8.5)
+            self._font_tool.setLetterSpacing(QFont.AbsoluteSpacing, 0.8)
+
         for i in range(n):
             self._shape_cache.append(self._petal_path(c, i, n))
             ox, oy = geo.label_pos(i, n, mid_r + (4 if self.kind == "conv" else 0))
@@ -96,7 +122,7 @@ class Wheel(QWidget):
                 "ly": ly,
                 "hot_pos": hot_pos,
                 "rect_conv": QRectF(lx - 60, ly - 14, 120, 28),
-                "rect_tool": QRectF(lx - 52, ly + 8, 104, 18),
+                "rect_tool": QRectF(lx - 58, ly + 8, 116, 18),
             })
 
     def _petal_path(self, c: QPointF, i: int, n: int) -> QPainterPath:
@@ -125,6 +151,8 @@ class Wheel(QWidget):
             return self.items[self.hover][1]
         if not self.items:
             return "NO OPTIONS"
+        if not self.paths:
+            return "DROP HERE"
         if len(self.paths) == 1:
             return engine.fmt_of(self.paths[0]).upper() or "FILE"
         return f"{len(self.paths)} FILES"
@@ -161,7 +189,7 @@ class Wheel(QWidget):
             if self.kind == "tools":
                 draw_icon(p, self.items[i][2], lx, ly - 13, 28, col)
                 p.setFont(self._font_tool); p.setPen(col)
-                p.drawText(layout["rect_tool"], Qt.AlignCenter, self.items[i][1])
+                p.drawText(layout["rect_tool"], Qt.AlignCenter | Qt.TextDontClip, self.items[i][1])
             else:
                 p.setFont(self._font_label); p.setPen(col)
                 p.drawText(layout["rect_conv"], Qt.AlignCenter, self.items[i][1])
@@ -193,13 +221,8 @@ class Wheel(QWidget):
         y = min(max(gy - SIZE // 2, geom.top()), geom.bottom() - SIZE)
         self.move(int(x), int(y))
 
-        needed_flags = (Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint) if interactive else (
-            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint
-        )
-        if self.windowFlags() != needed_flags:
-            self.setWindowFlags(needed_flags)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-            self.setAttribute(Qt.WA_ShowWithoutActivating, not interactive)
+        # Window flags are permanent and stable; toggle WA_ShowWithoutActivating without HWND recreation
+        self.setAttribute(Qt.WA_ShowWithoutActivating, not interactive)
 
         if not self.isVisible():
             self.setWindowOpacity(0.0)
@@ -210,16 +233,77 @@ class Wheel(QWidget):
             self.show()
 
         if interactive:
+            self._shown_time = time.monotonic()
+            self._was_activated = False
+            self._mouse_pressed_initial = bool(keys.primary_button_down() or keys.key_down(0x02))
+            app = QApplication.instance()
+            if app:
+                app.installEventFilter(self)
             self.activateWindow()
             self.setFocus()
+            self._interactive_timer.start()
+        else:
+            self._interactive_timer.stop()
 
         self.raise_()
         glass.apply(self, "ellipse", inset=(SIZE / 2 - R_RING))
 
     def dismiss(self):
+        if hasattr(self, "_interactive_timer") and self._interactive_timer.isActive():
+            self._interactive_timer.stop()
+        app = QApplication.instance()
+        if app:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
         if self.isVisible():
+            self.fade.stop()
+            self.pop.stop()
             self.hide()
         self.hover = -1
+        self._was_activated = False
+
+    def eventFilter(self, watched, event):
+        if getattr(self, "interactive", False) and self.isVisible():
+            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Escape, Qt.Key_Back):
+                self.dismiss()
+                return True
+            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+                if watched is not self and not self.isAncestorOf(watched):
+                    self.dismiss()
+        return super().eventFilter(watched, event)
+
+    def _poll_interactive(self):
+        if not self.isVisible() or not getattr(self, "interactive", False):
+            if hasattr(self, "_interactive_timer"):
+                self._interactive_timer.stop()
+            return
+
+        # Global Esc key dismissal
+        if keys.key_down(0x1B):
+            self.dismiss()
+            return
+
+        lbutton = keys.primary_button_down()
+        rbutton = keys.key_down(0x02)
+        button_down = lbutton or rbutton
+
+        # Wait until mouse is released if held during presentation
+        if getattr(self, "_mouse_pressed_initial", False):
+            if not button_down:
+                self._mouse_pressed_initial = False
+            return
+
+        if not button_down:
+            return
+
+        # Global mouse press outside the wheel circle
+        gx, gy = keys.cursor_pos()
+        c = self.geometry().center()
+        dist = math.hypot(gx - c.x(), gy - c.y())
+        if dist > R_RING:
+            self.dismiss()
 
     # Mouse & Keyboard interaction (interactive click & dismiss) --------
     def mouseMoveEvent(self, e):
@@ -237,7 +321,7 @@ class Wheel(QWidget):
             if 0 <= i < len(self.items):
                 kind, ident, paths = self.kind, self.items[i][0], list(self.paths)
                 self.dismiss()
-                QTimer.singleShot(0, lambda: self.chosen.emit(kind, ident, paths))
+                self.chosen.emit(kind, ident, paths)
                 return
             # Clicked outside petals or on center capsule: dismiss
             self.dismiss()
@@ -252,10 +336,12 @@ class Wheel(QWidget):
             super().keyPressEvent(e)
 
     def changeEvent(self, e):
-        from PySide6.QtCore import QEvent
         if e.type() in (QEvent.ActivationChange, QEvent.WindowDeactivate):
-            if getattr(self, "interactive", False) and not self.isActiveWindow():
-                self.dismiss()
+            if getattr(self, "interactive", False):
+                if self.isActiveWindow():
+                    self._was_activated = True
+                elif getattr(self, "_was_activated", False) and (time.monotonic() - getattr(self, "_shown_time", 0) > 0.35):
+                    self.dismiss()
         super().changeEvent(e)
 
     def hideEvent(self, e):
@@ -271,9 +357,14 @@ class Wheel(QWidget):
         return [u.toLocalFile() for u in md.urls() if u.isLocalFile() and os.path.isfile(u.toLocalFile())]
 
     def _hit(self, pos) -> int:
+        if not self.items:
+            return -1
         c = SIZE / 2
         s = self._scale or 1.0
-        return geo.hit_test(len(self.items), (pos.x() - c) / s, (pos.y() - c) / s, R_IN - 4, R_OUT + 4)
+        hit_idx = geo.hit_test(len(self.items), (pos.x() - c) / s, (pos.y() - c) / s, R_IN - 4, R_OUT + 4)
+        if hit_idx >= 0:
+            return min(hit_idx, len(self.items) - 1)
+        return -1
 
     def _set_hover(self, i: int):
         if i != self.hover:
@@ -311,7 +402,7 @@ class Wheel(QWidget):
         self._set_hover(-1)
 
     def dropEvent(self, e):
-        paths = self._paths(e)
+        paths = self._paths(e) or list(self.paths)
         i = self._hit(e.position())
         e.setDropAction(Qt.CopyAction)
         e.accept()

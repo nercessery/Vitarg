@@ -339,14 +339,16 @@ class Controller:
                 fn = lambda prog, cancel: tools.run_tool(tool_to_run, paths, {"custom_name": custom_name}, self.s, prog, cancel)
                 target_or_tool = "pdf"
             else:
+                params = {}
                 if getattr(self.s, "prompt_rename", True):
-                    dlg = ActionConfirmDialog(f"{src_fmt} → {ident.upper()}", paths, ident, is_conv=True)
+                    dlg = ActionConfirmDialog(f"{src_fmt} → {ident.upper()}", paths, ident, is_conv=True, settings=self.s)
                     dlg.show(); dlg.raise_(); dlg.activateWindow()
                     if not dlg.exec():
                         return
-                    custom_name = dlg.output_name()
+                    params = dlg.values() if hasattr(dlg, "values") else {}
+                    custom_name = params.get("custom_name", "") or dlg.output_name()
 
-                fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel, custom_name=custom_name)
+                fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel, custom_name=custom_name, params=params)
                 target_or_tool = ident
         else:
             tool = tools.BY_ID[ident]

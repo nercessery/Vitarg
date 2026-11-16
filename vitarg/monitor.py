@@ -103,11 +103,23 @@ class DragMonitor(QObject):
             self.token = 0
 
     def _query(self, hwnd, cls, token):
-        time.sleep(0.12)                         # let Explorer update the selection after mouse-down
-        paths = explorer_selection(hwnd, cls)
-        with self._lock:
-            if token == self.token:
-                self.sel = list(paths)
+        # Quick poll: try immediately first, then retry after brief intervals if empty
+        for delay in (0.0, 0.04, 0.08):
+            if delay > 0:
+                time.sleep(delay)
+            with self._lock:
+                if token != self.token:
+                    return
+            paths = explorer_selection(hwnd, cls)
+            if paths:
+                with self._lock:
+                    if token == self.token:
+                        self.sel = list(paths)
+                        # If the wheel is already visible, dynamically update it with the resolved selection
+                        if self.shown:
+                            p = QCursor.pos()
+                            self.trigger.emit(self.shown, list(paths), p.x(), p.y())
+                return
 
     def _tick(self):
         if sys.platform != "win32":
@@ -155,11 +167,17 @@ class DragMonitor(QObject):
             return
         x, y = keys.cursor_pos()
         moved = max(abs(x - self.origin[0]), abs(y - self.origin[1]))
-        file_drag = _drag_image_present() and moved >= DRAG_THRESHOLD_PX
         with self._lock:
             current_sel = list(self.sel)
-        known = bool(current_sel) and moved >= 40
-        if self.shown is None and not (file_drag or known):
+        # On Windows 11 DWM composition, SysDragImage is absent.
+        # If selection is already resolved, trigger immediately at DRAG_THRESHOLD_PX (8px).
+        # If selection is still pending / empty, allow a brief grace movement (>= 24px)
+        # before triggering with fallback default options so the user is never blocked.
+        is_drag = (_drag_image_present() or self.armed) and (
+            (bool(current_sel) and moved >= DRAG_THRESHOLD_PX)
+            or (moved >= 24)
+        )
+        if self.shown is None and not is_drag:
             return
         self.shown = kind
         p = QCursor.pos()

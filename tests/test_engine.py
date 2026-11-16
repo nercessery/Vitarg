@@ -127,7 +127,7 @@ class MediaTests(Base):
         for tf in engine.targets_for_format("mp4"):
             out = engine.convert(src, tf, self.st, seen.append)[0]
             info = engine.probe(out)
-            if tf in ("mp3", "m4a", "wav"):
+            if tf in ("mp3", "m4a", "wav", "aac"):
                 self.assertTrue(info["audio"] and not info["video"], tf)
             else:
                 self.assertTrue(info["video"], tf)

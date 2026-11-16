@@ -1,4 +1,5 @@
 """Tool option dialogs: generic form dialog and the crop editor (matches the reference screenshot)."""
+from pathlib import Path
 from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal, QSize
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QBrush, QCursor, QIntValidator
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QComboBox, QSpinBox,
@@ -66,7 +67,7 @@ class FormDialog(Panel):
         for r, f in enumerate(tool.form):
             grid.addWidget(QLabel(f["label"]), r, 0)
             k, d = f["kind"], f["default"]
-            if f["key"] == "preset":
+            if tool.id == "compress" and f["key"] == "preset":
                 d = settings.compress_preset
             if k == CHOICE:
                 w = QComboBox(); w.addItems(f["choices"]); w.setCurrentText(str(d))
@@ -222,21 +223,10 @@ class FormDialog(Panel):
             fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
             try:
-                af = ""
-                if tool_id == "volume":
-                    vol = int(vals.get("volume", 150)) / 100.0
-                    af = f"volume={vol:.2f}"
-                elif tool_id == "eq":
-                    pr = vals.get("preset", "Bass Boost")
-                    m = {
-                        "Bass Boost": "bass=g=8:f=100",
-                        "Ultra Bass": "bass=g=14:f=80,volume=1.2",
-                        "Vocal Boost": "equalizer=f=1000:t=q:w=1:g=5",
-                        "Treble Boost": "treble=g=8:f=4000",
-                        "Loudness & Clarity": "loudnorm=I=-16:TP=-1.5:LRA=11",
-                        "Flat": "anull"
-                    }
-                    af = m.get(pr, "bass=g=8:f=100")
+                from .tools import build_audio_filter
+                vol = int(vals.get("volume", 100 if tool_id == "eq" else 150))
+                pr = vals.get("preset", "Flat" if tool_id == "volume" else "Bass Boost")
+                af = build_audio_filter(vol, pr)
                 cmd = [engine.need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", "0", "-t", "2", "-i", str(src)]
                 if af:
                     cmd += ["-filter:a", af]
@@ -416,19 +406,23 @@ class CropDialog(Panel):
 
 # ---------------------------------------------------------------------------- action confirm / rename
 class ActionConfirmDialog(Panel):
-    """Pre-action confirmation and file rename dialog: let user edit file name before converting."""
+    """Pre-action confirmation, parameter configuration, and file rename dialog."""
 
-    def __init__(self, title: str, paths: list[str], target_or_tool: str, is_conv: bool = True, parent=None):
-        super().__init__(f"Vitarg: {title}", 480, parent)
-        from pathlib import Path
+    def __init__(self, title: str, paths: list[str], target_or_tool: str, is_conv: bool = True,
+                 parent=None, settings=None):
+        super().__init__(f"Vitarg: {title}", 520, parent)
         self.paths = [Path(p) for p in paths]
         self.target = target_or_tool
         self.is_conv = is_conv
-        p0 = self.paths[0]
+        from .settings import Settings
+        self.settings = settings or Settings()
+        p0 = self.paths[0] if self.paths else None
         n_files = len(self.paths)
 
         # 1. Source file header
-        if n_files == 1:
+        if n_files == 0:
+            src_lbl = QLabel("📁 <b>No files selected</b>")
+        elif n_files == 1:
             from .estimator import format_size
             try:
                 sz = format_size(p0.stat().st_size)
@@ -444,7 +438,7 @@ class ActionConfirmDialog(Panel):
         self.body.addWidget(src_lbl)
 
         # 2. Conversion / Action Preview badge
-        if is_conv:
+        if is_conv and p0:
             try:
                 from .estimator import estimate_conversion
                 est = estimate_conversion(p0, target_or_tool)
@@ -458,7 +452,133 @@ class ActionConfirmDialog(Panel):
             except Exception:
                 pass
 
-        # 3. Rename Section
+        # 3. Conversion Options Section (when is_conv and target is audio or video)
+        target_lower = str(target_or_tool).lower().lstrip(".")
+        self.is_audio_target = target_lower in engine.AUDIO_OUT
+        self.is_video_target = target_lower in engine.VIDEO_OUT and target_lower != "gif"
+        self.has_audio_options = is_conv and (self.is_audio_target or self.is_video_target)
+
+        if self.has_audio_options:
+            opts_box = QWidget()
+            opts_lay = QVBoxLayout(opts_box)
+            opts_lay.setContentsMargins(0, 4, 0, 4)
+            opts_lay.setSpacing(6)
+
+            opts_title = QLabel("⚙️ Conversion Audio & Quality Options:")
+            opts_title.setStyleSheet("color: #A78BFA; font-weight: bold; font-size: 12px;")
+            opts_lay.addWidget(opts_title)
+
+            grid = QGridLayout()
+            grid.setVerticalSpacing(8)
+            grid.setHorizontalSpacing(10)
+
+            # Volume row (Slider + Spinbox + Status label)
+            vol_lbl = QLabel("🔊 Volume:")
+            vol_lbl.setStyleSheet("font-weight: 500;")
+            grid.addWidget(vol_lbl, 0, 0)
+
+            vol_row = QHBoxLayout()
+            vol_row.setSpacing(8)
+            self.vol_slider = QSlider(Qt.Horizontal)
+            self.vol_slider.setRange(10, 600)
+            self.vol_slider.setValue(100)
+            self.vol_slider.setSingleStep(5)
+            self.vol_slider.setPageStep(25)
+
+            self.vol_spin = QSpinBox()
+            self.vol_spin.setRange(10, 600)
+            self.vol_spin.setValue(100)
+            self.vol_spin.setSingleStep(5)
+            self.vol_spin.setSuffix("%")
+            self.vol_spin.setFixedWidth(75)
+
+            self.vol_status = QLabel("Normal (100%)")
+            self.vol_status.setFixedWidth(95)
+            self.vol_status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+
+            def _on_vol_changed(v):
+                self.vol_spin.blockSignals(True)
+                self.vol_slider.blockSignals(True)
+                self.vol_spin.setValue(v)
+                self.vol_slider.setValue(v)
+                self.vol_spin.blockSignals(False)
+                self.vol_slider.blockSignals(False)
+                if v == 100:
+                    self.vol_status.setText("Normal (100%)")
+                    self.vol_status.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+                elif v > 100:
+                    self.vol_status.setText(f"+{v - 100}% Boost")
+                    self.vol_status.setStyleSheet("color: #34D399; font-size: 11px; font-weight: bold;")
+                else:
+                    self.vol_status.setText(f"-{100 - v}% Lower")
+                    self.vol_status.setStyleSheet("color: #F87171; font-size: 11px;")
+
+            self.vol_slider.valueChanged.connect(_on_vol_changed)
+            self.vol_spin.valueChanged.connect(_on_vol_changed)
+
+            vol_row.addWidget(self.vol_slider, stretch=1)
+            vol_row.addWidget(self.vol_spin)
+            vol_row.addWidget(self.vol_status)
+            grid.addLayout(vol_row, 0, 1)
+
+            # Equalizer preset row
+            eq_lbl = QLabel("🎛️ Equalizer:")
+            eq_lbl.setStyleSheet("font-weight: 500;")
+            grid.addWidget(eq_lbl, 1, 0)
+
+            self.eq_combo = QComboBox()
+            self.eq_combo.addItems([
+                "Flat (Original)",
+                "Bass Boost (+8dB)",
+                "Ultra Bass (+14dB)",
+                "Vocal Boost",
+                "Treble Boost",
+                "Loudness & Clarity"
+            ])
+            self.eq_combo.setCurrentText("Flat (Original)")
+            grid.addWidget(self.eq_combo, 1, 1)
+
+            # Bitrate row (for audio targets or general audio quality)
+            next_row = 2
+            if self.is_audio_target:
+                bitrate_lbl = QLabel("🎵 Bitrate:")
+                bitrate_lbl.setStyleSheet("font-weight: 500;")
+                grid.addWidget(bitrate_lbl, next_row, 0)
+
+                self.bitrate_combo = QComboBox()
+                self.bitrate_combo.addItems([
+                    "320 kbps (High Quality)",
+                    "256 kbps",
+                    "192 kbps (Standard)",
+                    "128 kbps (Compact)",
+                    "96 kbps (Voice)"
+                ])
+                def_bitrate = getattr(self.settings, "audio_bitrate_k", 192)
+                matched = False
+                for i in range(self.bitrate_combo.count()):
+                    if str(def_bitrate) in self.bitrate_combo.itemText(i):
+                        self.bitrate_combo.setCurrentIndex(i)
+                        matched = True
+                        break
+                if not matched:
+                    self.bitrate_combo.setCurrentText("192 kbps (Standard)")
+                grid.addWidget(self.bitrate_combo, next_row, 1)
+                next_row += 1
+
+            opts_lay.addLayout(grid)
+
+            # Audio Preview Button
+            self.play_btn = QPushButton("🔊 Listen Preview Sample (2s)")
+            self.play_btn.setStyleSheet(
+                "background: rgba(124, 58, 237, 0.25); border: 1px solid rgba(124, 58, 237, 0.5); "
+                "color: #E0E7FF; font-weight: bold; padding: 6px 12px; border-radius: 6px; margin: 2px 0;"
+            )
+            self.play_btn.clicked.connect(self._play_preview_sample)
+            opts_lay.addWidget(self.play_btn)
+
+            self.body.addWidget(opts_box)
+
+        # 4. Rename Section
         ren_box = QWidget()
         r_lay = QVBoxLayout(ren_box)
         r_lay.setContentsMargins(0, 6, 0, 6)
@@ -468,8 +588,8 @@ class ActionConfirmDialog(Panel):
         r_title.setStyleSheet("color: #7C3AED; font-weight: bold; font-size: 12px;")
         r_lay.addWidget(r_title)
 
-        ext = f".{target_or_tool.lower().lstrip('.')}" if is_conv else p0.suffix
-        default_name = p0.stem if n_files == 1 else "{name}"
+        ext = f".{target_or_tool.lower().lstrip('.')}" if is_conv else (p0.suffix if p0 else "")
+        default_name = p0.stem if (p0 and n_files == 1) else "{name}"
 
         self.name_edit = QLineEdit(default_name)
         self.name_edit.setStyleSheet(
@@ -502,7 +622,7 @@ class ActionConfirmDialog(Panel):
         r_lay.addWidget(hint)
         self.body.addWidget(ren_box)
 
-        # 4. Action Buttons
+        # 5. Action Buttons
         btn_row = QHBoxLayout()
         cancel_btn = QPushButton("Cancel (Esc)")
         cancel_btn.clicked.connect(self.reject)
@@ -518,8 +638,71 @@ class ActionConfirmDialog(Panel):
         btn_row.addWidget(ok_btn)
         self.body.addLayout(btn_row)
 
+    def _get_selected_bitrate_k(self) -> int:
+        if hasattr(self, "bitrate_combo"):
+            txt = self.bitrate_combo.currentText()
+            try:
+                return int(txt.split()[0])
+            except (ValueError, IndexError):
+                pass
+        return getattr(self.settings, "audio_bitrate_k", 192)
+
+    def _play_preview_sample(self):
+        if not self.paths:
+            return
+        import threading, tempfile, subprocess, os, shutil, sys
+        src = self.paths[0]
+        try:
+            inf = engine.probe(src)
+            if not inf.get("audio"):
+                return
+        except Exception:
+            pass
+
+        vol = self.vol_spin.value()
+        eq_pr = self.eq_combo.currentText()
+        from .tools import build_audio_filter
+        af = build_audio_filter(vol, eq_pr)
+
+        def _bg():
+            fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            try:
+                cmd = [engine.need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", "0", "-t", "2", "-i", str(src)]
+                if af:
+                    cmd += ["-filter:a", af]
+                cmd += ["-c:a", "pcm_s16le", tmp_wav]
+                subprocess.run(cmd, capture_output=True, creationflags=engine.NOWIN)
+                if os.path.exists(tmp_wav) and os.path.getsize(tmp_wav) > 0:
+                    if sys.platform == "win32":
+                        import winsound
+                        winsound.PlaySound(tmp_wav, winsound.SND_FILENAME)
+                    else:
+                        for player in ("paplay", "aplay", "pw-play", "ffplay"):
+                            p = shutil.which(player)
+                            if p:
+                                cmd = [p, "-nodisp", "-autoexit", tmp_wav] if player == "ffplay" else [p, tmp_wav]
+                                subprocess.run(cmd, capture_output=True)
+                                break
+            finally:
+                try:
+                    os.unlink(tmp_wav)
+                except OSError:
+                    pass
+        threading.Thread(target=_bg, daemon=True).start()
+
     def output_name(self) -> str:
         return self.name_edit.text().strip()
+
+    def values(self) -> dict:
+        out = {
+            "custom_name": self.output_name()
+        }
+        if getattr(self, "has_audio_options", False):
+            out["volume"] = self.vol_spin.value()
+            out["bass_preset"] = self.eq_combo.currentText()
+            out["bitrate_k"] = self._get_selected_bitrate_k()
+        return out
 
 
 # ---------------------------------------------------------------------------- visual PDF organizer & merger

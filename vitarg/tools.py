@@ -59,10 +59,13 @@ TOOLS = [
          "choices": ["<25 MB (Discord)", "<50 MB (Nitro)", "<10 MB (Email)", "<8 MB (WhatsApp)", "Custom MB"], "default": "<25 MB (Discord)"},
         {"key": "custom_mb", "label": "Custom size (MB)", "kind": INT, "min": 1, "max": 2000, "default": 25}]),
     Tool("volume", "VOLUME BOOST", ("audio", "video"), form=[
-        {"key": "volume", "label": "Volume boost %", "kind": INT, "min": 10, "max": 600, "default": 150}]),
+        {"key": "volume", "label": "Volume boost %", "kind": INT, "min": 10, "max": 600, "default": 150},
+        {"key": "preset", "label": "Equalizer preset", "kind": CHOICE,
+         "choices": ["Flat", "Bass Boost (+8dB)", "Ultra Bass (+14dB)", "Vocal Boost", "Treble Boost", "Loudness & Clarity"], "default": "Flat"}]),
     Tool("eq", "AUDIO EQUALIZER", ("audio", "video"), form=[
         {"key": "preset", "label": "Equalizer preset", "kind": CHOICE,
-         "choices": ["Bass Boost", "Ultra Bass", "Vocal Boost", "Treble Boost", "Loudness & Clarity", "Flat"], "default": "Bass Boost"}]),
+         "choices": ["Bass Boost (+8dB)", "Ultra Bass (+14dB)", "Vocal Boost", "Treble Boost", "Loudness & Clarity", "Flat"], "default": "Bass Boost (+8dB)"},
+        {"key": "volume", "label": "Volume boost %", "kind": INT, "min": 10, "max": 600, "default": 100}]),
     Tool("extract_text", "EXTRACT TEXT", ("pdf", "image"), form=[
         {"key": "target", "label": "Output destination", "kind": CHOICE,
          "choices": [".txt File", "Copy to Clipboard", "Both"], "default": ".txt File"}]),
@@ -743,6 +746,65 @@ def target_compress_video(src: Path, ws: Workspace, params: dict, progress, canc
     return out
 
 
+
+EQ_PRESETS = [
+    "Flat",
+    "Bass Boost (+8dB)",
+    "Ultra Bass (+14dB)",
+    "Vocal Boost",
+    "Treble Boost",
+    "Loudness & Clarity",
+]
+
+EQ_PRESET_FILTERS = {
+    "Bass Boost": "bass=g=8:f=100",
+    "Bass Boost (+8dB)": "bass=g=8:f=100",
+    "Ultra Bass": "bass=g=14:f=80,volume=1.2",
+    "Ultra Bass (+14dB)": "bass=g=14:f=80,volume=1.2",
+    "Vocal Boost": "equalizer=f=1000:t=q:w=1:g=5,equalizer=f=3000:t=q:w=1:g=4",
+    "Treble Boost": "treble=g=8:f=4000",
+    "Loudness & Clarity": "loudnorm=I=-16:TP=-1.5:LRA=11",
+    "Flat": "anull",
+    "Flat (Original)": "anull",
+}
+
+
+def resolve_eq_filter(preset: str) -> str:
+    """Normalize EQ preset name and return its FFmpeg audio filter string."""
+    if not preset:
+        return "anull"
+    p = str(preset).strip()
+    if p in EQ_PRESET_FILTERS:
+        return EQ_PRESET_FILTERS[p]
+    p_low = p.lower()
+    if "ultra" in p_low:
+        return EQ_PRESET_FILTERS["Ultra Bass (+14dB)"]
+    if "bass" in p_low:
+        return EQ_PRESET_FILTERS["Bass Boost (+8dB)"]
+    if "vocal" in p_low:
+        return EQ_PRESET_FILTERS["Vocal Boost"]
+    if "treble" in p_low:
+        return EQ_PRESET_FILTERS["Treble Boost"]
+    if "loudness" in p_low:
+        return EQ_PRESET_FILTERS["Loudness & Clarity"]
+    if "flat" in p_low:
+        return "anull"
+    prefix = p.split(" (")[0]
+    return EQ_PRESET_FILTERS.get(prefix, "anull" if prefix == "Flat" else "bass=g=8:f=100")
+
+
+def build_audio_filter(vol_pct: int = 100, eq_preset: str = "Flat") -> str:
+    """Build a combined FFmpeg audio filter string from volume percentage and EQ preset."""
+    filters = []
+    eq_af = resolve_eq_filter(eq_preset)
+    if eq_af and eq_af != "anull":
+        filters.append(eq_af)
+    vol_pct = max(10, min(600, int(vol_pct)))
+    if vol_pct != 100:
+        filters.append(f"volume={vol_pct / 100.0:.2f}")
+    return ",".join(filters)
+
+
 def volume_boost(src: Path, ws: Workspace, params: dict, progress, cancel) -> Path:
     info = probe(src)
     if not info.get("audio"):
@@ -752,22 +814,32 @@ def volume_boost(src: Path, ws: Workspace, params: dict, progress, cancel) -> Pa
     vol_pct = max(10, min(600, vol_pct))
     factor = vol_pct / 100.0
 
+    preset = params.get("preset", "Flat")
+    eq_af = resolve_eq_filter(preset)
+
+    filters = []
+    if eq_af and eq_af != "anull":
+        filters.append(eq_af)
+    filters.append(f"volume={factor:.2f}")
+    af = ",".join(filters)
+
     sf = fmt_of(src)
     fam = family(sf)
-    out = _out(ws, src, f"Vol_{vol_pct}pct")
-    vol_filter = f"volume={factor:.2f}"
+    slug = preset.split()[0] if preset and preset not in ("Flat", "Flat (Original)") else ""
+    suffix = f"Vol_{vol_pct}pct_{slug}" if slug else f"Vol_{vol_pct}pct"
+    out = _out(ws, src, suffix)
 
     if fam == "video":
         a_codec = ["-c:a", "libopus", "-b:a", "128k"] if sf == "webm" else ["-c:a", "aac", "-b:a", "192k"]
-        args = ["-i", str(src), "-c:v", "copy", "-filter:a", vol_filter, *a_codec, str(out)]
+        args = ["-i", str(src), "-c:v", "copy", "-filter:a", af, *a_codec, str(out)]
     else:
         if sf == "mp3":
-            args = ["-i", str(src), "-filter:a", vol_filter, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
+            args = ["-i", str(src), "-filter:a", af, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
         elif sf in engine.AUDIO_CODEC:
             codec = [a.replace("{abr}", "192") for a in engine.AUDIO_CODEC[sf]]
-            args = ["-i", str(src), "-filter:a", vol_filter, *codec, str(out)]
+            args = ["-i", str(src), "-filter:a", af, *codec, str(out)]
         else:
-            args = ["-i", str(src), "-filter:a", vol_filter, str(out)]
+            args = ["-i", str(src), "-filter:a", af, str(out)]
     run_ffmpeg(args, info.get("duration", 0), progress, cancel)
     return out
 
@@ -778,19 +850,23 @@ def audio_equalizer(src: Path, ws: Workspace, params: dict, progress, cancel) ->
         raise ConversionError("The source has no audio stream for equalizer.")
 
     preset = params.get("preset", "Bass Boost")
-    preset_filters = {
-        "Bass Boost": "bass=g=8:f=100",
-        "Ultra Bass": "bass=g=14:f=80,volume=1.2",
-        "Vocal Boost": "equalizer=f=1000:t=q:w=1:g=5,equalizer=f=3000:t=q:w=1:g=4",
-        "Treble Boost": "treble=g=8:f=4000",
-        "Loudness & Clarity": "loudnorm=I=-16:TP=-1.5:LRA=11",
-        "Flat": "anull"
-    }
-    af = preset_filters.get(preset, "bass=g=8:f=100")
+    eq_af = resolve_eq_filter(preset)
+
+    vol_pct = int(params.get("volume", 100))
+    vol_pct = max(10, min(600, vol_pct))
+
+    filters = []
+    if eq_af and eq_af != "anull":
+        filters.append(eq_af)
+    if vol_pct != 100:
+        filters.append(f"volume={vol_pct / 100.0:.2f}")
+
+    af = ",".join(filters) if filters else "anull"
     sf = fmt_of(src)
     fam = family(sf)
     slug = preset.split()[0]
-    out = _out(ws, src, f"EQ_{slug}")
+    suffix = f"EQ_{slug}_{vol_pct}pct" if vol_pct != 100 else f"EQ_{slug}"
+    out = _out(ws, src, suffix)
 
     if fam == "video":
         a_codec = ["-c:a", "libopus", "-b:a", "128k"] if sf == "webm" else ["-c:a", "aac", "-b:a", "192k"]
@@ -852,6 +928,28 @@ def extract_text_tool(src: Path, ws: Workspace, params: dict) -> Path:
 
 
 # ------------------------------------------------------------------ dispatcher
+class ToolResult(tuple):
+    """Tuple of (outputs, errors) that also behaves as a PathLike pointing to the first output."""
+    def __new__(cls, outs, errs):
+        return super().__new__(cls, (outs, errs))
+
+    def __fspath__(self):
+        if self and self[0]:
+            return str(self[0][0])
+        return ""
+
+    @property
+    def name(self):
+        return self[0][0].name if (self and self[0]) else ""
+
+    @property
+    def stem(self):
+        return self[0][0].stem if (self and self[0]) else ""
+
+    def exists(self):
+        return self[0][0].exists() if (self and self[0]) else False
+
+
 def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
              cancel: Optional[threading.Event] = None):
     """Run a tool. Returns (outputs, errors[(name, message)])."""
@@ -878,7 +976,7 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
             if params.get("custom_name"):
                 from .rename import apply_custom_rename
                 published = [Path(p) for p in apply_custom_rename([str(p) for p in published], params["custom_name"])]
-            return published, []
+            return ToolResult(published, [])
     n = len(sources)
     for i, s in enumerate(sources):
         sub = lambda f, i=i: progress((i + f) / n)
@@ -945,7 +1043,7 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
     if params.get("custom_name"):
         from .rename import apply_custom_rename
         outs = [Path(p) for p in apply_custom_rename([str(p) for p in outs], params["custom_name"])]
-    return outs, errs
+    return ToolResult(outs, errs)
 
 
 # ------------------------------------------------------------------ live previews (used by the option dialogs)
@@ -1131,14 +1229,20 @@ def make_preview(tool_id: str, paths, p: dict):
     if tool_id == "volume":
         vol = int(p.get("volume", 150))
         factor = vol / 100.0
+        preset = p.get("preset", "Flat")
         txt = f"Volume: {vol}% ({factor:.2f}x boost)"
+        if preset and preset not in ("Flat", "Flat (Original)"):
+            txt += f" · EQ: {preset}"
         if fam == "video":
             return media_frame(src, dur * 0.25 if dur else 0.5), txt + " · Video stream copied lossless"
         else:
             return waveform_image(src), txt
     if tool_id == "eq":
         preset = p.get("preset", "Bass Boost")
+        vol = int(p.get("volume", 100))
         txt = f"Equalizer preset: {preset}"
+        if vol != 100:
+            txt += f" · Volume: {vol}% ({vol / 100.0:.2f}x)"
         if fam == "video":
             return media_frame(src, dur * 0.25 if dur else 0.5), txt
         else:

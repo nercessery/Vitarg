@@ -107,7 +107,7 @@ def targets_for_format(fmt: str) -> list[str]:
     if fam == "audio":
         return [x for x in AUDIO_OUT if x != fmt]
     if fam == "video":
-        return [x for x in VIDEO_OUT if x != fmt] + ["mp3", "m4a", "wav"]
+        return [x for x in VIDEO_OUT if x != fmt] + ["mp3", "m4a", "wav", "aac"]
     if fam in ("pdf", "doc"):
         return list(DOC_TARGETS[fmt])
     if fam == "archive":
@@ -310,14 +310,75 @@ def _video_args(target: str, crf: int) -> list[str]:
     raise ConversionError(f"Unsupported video target {target}")
 
 
-def convert_media(src: Path, target: str, out: Path, settings, progress, cancel) -> None:
+def _audio_filters(params: Optional[dict]) -> list[str]:
+    """Build FFmpeg -filter:a args from volume and equalizer preset parameters."""
+    if not params:
+        return []
+    clauses = []
+
+    # 1. Volume scaling
+    vol = params.get("volume")
+    if vol is not None:
+        try:
+            v = float(vol)
+            factor = v / 100.0 if v >= 10 else v
+            if abs(factor - 1.0) > 0.001:
+                clauses.append(f"volume={factor:.2f}")
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Equalizer / Bass presets
+    preset = params.get("bass_preset") or params.get("preset") or params.get("eq_preset")
+    if preset and isinstance(preset, str):
+        p_low = preset.strip().lower()
+        if "ultra" in p_low:
+            clauses.append("bass=g=14:f=80,volume=1.2")
+        elif "bass" in p_low:
+            clauses.append("bass=g=8:f=100")
+        elif "vocal" in p_low:
+            clauses.append("equalizer=f=1000:t=q:w=1:g=5,equalizer=f=3000:t=q:w=1:g=4")
+        elif "treble" in p_low:
+            clauses.append("treble=g=8:f=4000")
+        elif "loudness" in p_low:
+            clauses.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        elif "flat" in p_low:
+            pass
+
+    # 3. Custom direct bass gain (if passed numerically)
+    bass_gain = params.get("bass_gain")
+    if bass_gain is not None and not any("bass=" in c for c in clauses):
+        try:
+            bg = float(bass_gain)
+            if abs(bg) > 0.001:
+                clauses.append(f"bass=g={bg:.1f}:f=100")
+        except (ValueError, TypeError):
+            pass
+
+    # 4. Custom filter passthrough
+    custom_af = params.get("custom_af") or params.get("audio_filter")
+    if custom_af and isinstance(custom_af, str) and custom_af.strip():
+        clauses.append(custom_af.strip())
+
+    if clauses:
+        return ["-filter:a", ",".join(clauses)]
+    return []
+
+
+def convert_media(src: Path, target: str, out: Path, settings, progress, cancel,
+                  params: Optional[dict] = None) -> None:
     info = probe(src)
     sf = fmt_of(src)
+    af_args = _audio_filters(params)
+    abr = params.get("bitrate_k", settings.audio_bitrate_k) if params else settings.audio_bitrate_k
+
     if target in AUDIO_OUT:
         if not info["audio"]:
             raise ConversionError("The source has no audio stream to extract.")
-        codec = [a.replace("{abr}", str(settings.audio_bitrate_k)) for a in AUDIO_CODEC[target]]
-        args = ["-i", str(src), "-map", "0:a:0", "-vn", *codec, str(out)]
+        if target == "mp3" and params and "bitrate_k" in params:
+            codec = ["-c:a", "libmp3lame", "-b:a", f"{abr}k"]
+        else:
+            codec = [a.replace("{abr}", str(abr)) for a in AUDIO_CODEC[target]]
+        args = ["-i", str(src), "-map", "0:a:0", "-vn", *af_args, *codec, str(out)]
     elif target == "gif":
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
@@ -326,11 +387,17 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel)
     else:
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
+        crf = int(params.get("video_crf", params.get("crf", settings.video_crf))) if params else settings.video_crf
+        v_args = _video_args(target, crf)
+        if params and "video_preset" in params:
+            v_preset = str(params["video_preset"])
+            if "-preset" in v_args:
+                idx = v_args.index("-preset")
+                v_args[idx + 1] = v_preset
         if not info["audio"]:
-            raw_v = _video_args(target, settings.video_crf)
             clean_v = []
             skip_next = False
-            for a in raw_v:
+            for a in v_args:
                 if skip_next:
                     skip_next = False
                     continue
@@ -340,7 +407,7 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel)
                 clean_v.append(a)
             args = ["-i", str(src), "-map", "0:v:0", "-an", *clean_v, str(out)]
         else:
-            args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *_video_args(target, settings.video_crf), str(out)]
+            args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *af_args, *v_args, str(out)]
     run_ffmpeg(args, info["duration"], progress, cancel)
     chk = probe(out)
     if target in AUDIO_OUT and not chk["audio"]:
@@ -783,7 +850,8 @@ def convert_archive(src: Path, sf: str, target: str, ws: Workspace) -> None:
 # ------------------------------------------------------------------ public API
 def convert(src, target: str, settings, progress: Progress = _noop,
             cancel: Optional[threading.Event] = None,
-            custom_name: str = "", index: int = 1) -> list[Path]:
+            custom_name: str = "", index: int = 1,
+            params: Optional[dict] = None) -> list[Path]:
     src = Path(src)
     if not src.is_file():
         raise ConversionError(f"Source file not found: {src}")
@@ -795,7 +863,7 @@ def convert(src, target: str, settings, progress: Progress = _noop,
         ext = "tar.gz" if target == "gz" else target
         out = ws.path(f"{src.stem if not src.name.lower().endswith('.tar.gz') else src.name[:-7]}.{ext}")
         if fam in ("audio", "video") or (fam == "gif" and target in ("mp4", "mov", "mkv", "webm")):
-            convert_media(src, target, out, settings, progress, cancel)
+            convert_media(src, target, out, settings, progress, cancel, params=params)
         elif fam in ("image", "gif"):
             convert_image(src, target, out, settings)
         elif fam in ("pdf", "doc"):
@@ -816,14 +884,15 @@ def convert(src, target: str, settings, progress: Progress = _noop,
 
 def convert_batch(sources, target: str, settings, progress: Progress = _noop,
                   cancel: Optional[threading.Event] = None,
-                  custom_name: str = ""):
+                  custom_name: str = "",
+                  params: Optional[dict] = None):
     """Convert several files. Returns (outputs, errors[(source, message)])."""
     outs, errs = [], []
     n = len(sources)
     for i, s in enumerate(sources):
         try:
             outs += convert(s, target, settings, lambda f, i=i: progress((i + f) / n), cancel,
-                            custom_name=custom_name, index=i+1)
+                            custom_name=custom_name, index=i+1, params=params)
         except Cancelled:
             raise
         except ConversionError as e:
