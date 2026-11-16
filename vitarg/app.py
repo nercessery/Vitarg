@@ -447,6 +447,12 @@ def main():
     ctl = Controller(app, settings)
     app.ctl = ctl
 
+    try:
+        from .updater import clean_stale_temp_installers
+        threading.Thread(target=clean_stale_temp_installers, daemon=True).start()
+    except Exception:
+        pass
+
     if first_run:
         settings.save()
         try:

@@ -128,6 +128,19 @@ if ($p.ExitCode -ne 0) {
     exit 1
 }
 
+Write-Host "=== Generating Manifest & Lightweight Update Package (Vitarg-app.zip) ==="
+& $py -c "from vitarg.updater import generate_manifest; import json, pathlib; m = generate_manifest(pathlib.Path('dist/Vitarg'), '1.0.3.2'); pathlib.Path('dist/manifest.json').write_text(json.dumps(m, indent=2), encoding='utf-8')"
+if (Test-Path "dist\manifest.json") {
+    Write-Host "Manifest generated successfully: dist\manifest.json"
+}
+
+$appZip = Join-Path $root "dist\Vitarg-app.zip"
+Remove-Item $appZip -ErrorAction SilentlyContinue
+& $py -c "import zipfile, pathlib; p = pathlib.Path('dist/Vitarg'); z = zipfile.ZipFile('dist/Vitarg-app.zip', 'w', zipfile.ZIP_DEFLATED); [z.write(f, f.relative_to(p)) for f in p.rglob('*') if f.is_file() and not str(f.relative_to(p)).replace(chr(92), '/').lower().startswith('tools/')]; z.close()"
+if (Test-Path $appZip) {
+    Write-Host "Vitarg-app.zip packaged successfully ($([math]::Round((Get-Item $appZip).Length / 1MB, 1)) MB)"
+}
+
 Write-Host "=== Building Installer (Vitarg-Setup.exe) ==="
 $iscc = @(
     (Get-Command iscc -ErrorAction SilentlyContinue).Source,

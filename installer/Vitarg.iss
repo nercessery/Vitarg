@@ -1,6 +1,6 @@
 [Setup]
 AppName=Vitarg
-AppVersion=1.0.3
+AppVersion=1.0.3.2
 DefaultDirName={autopf}\Vitarg
 DefaultGroupName=Vitarg
 OutputDir=..\dist
@@ -16,6 +16,9 @@ DisableProgramGroupPage=yes
 CloseApplications=yes
 RestartApplications=yes
 CloseApplicationsFilter=Vitarg.exe
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

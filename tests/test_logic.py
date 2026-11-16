@@ -162,8 +162,10 @@ class VitargUpdaterSemver(unittest.TestCase):
         self.assertEqual(parse_semver("v1.0.0"), (1, 0, 0))
         self.assertEqual(parse_semver("1.0.1"), (1, 0, 1))
         self.assertEqual(parse_semver("v2.0.0-beta"), (2, 0, 0))
+        self.assertEqual(parse_semver("1.0.3.2"), (1, 0, 3, 2))
         self.assertTrue(parse_semver("v1.0.1") > parse_semver("v1.0.0"))
         self.assertTrue(parse_semver("v1.1.0") > parse_semver("v1.0.0"))
+        self.assertTrue(parse_semver("v1.0.3.2") > parse_semver("v1.0.3"))
         self.assertFalse(parse_semver("v1.0.0") > parse_semver("v1.0.0"))
         self.assertFalse(parse_semver("v0.9.9") > parse_semver("v1.0.0"))
 
@@ -173,7 +175,7 @@ class VitargUpdaterSemver(unittest.TestCase):
         import vitarg.cropmath as vc
         import vitarg.keys as vk
         import vitarg.settings as vs
-        self.assertEqual(vitarg.__version__, "1.0.3")
+        self.assertEqual(vitarg.__version__, "1.0.3.2")
         s = vs.Settings()
         self.assertEqual(s.tint, "#12111A")
         self.assertEqual(s.highlight, "#7C3AED")
@@ -185,6 +187,33 @@ class VitargUpdaterSemver(unittest.TestCase):
             self.assertTrue(callable(selftest))
         except ImportError:
             pass
+
+    def test_manifest_generation_and_diff(self):
+        import tempfile
+        from vitarg.updater import generate_manifest, diff_local_with_manifest
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "Vitarg.exe").write_bytes(b"MZ_fake_exe_12345")
+            (p / "_internal").mkdir()
+            (p / "_internal" / "lib1.dll").write_text("lib1")
+            (p / "_internal" / "stale.dll").write_text("old_stale")
+            (p / "tools").mkdir()
+            tool_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+            (p / "tools" / tool_name).write_bytes(b"F" * 2000)
+
+            # Generate manifest without stale.dll
+            manifest = {
+                "version": "1.0.3.2",
+                "files": {
+                    "Vitarg.exe": {"size": (p / "Vitarg.exe").stat().st_size, "sha256": ""},
+                    "_internal/lib1.dll": {"size": (p / "_internal" / "lib1.dll").stat().st_size, "sha256": ""},
+                    "_internal/new.dll": {"size": 50, "sha256": ""},
+                }
+            }
+            diff = diff_local_with_manifest(p, manifest)
+            self.assertIn("_internal/stale.dll", diff["stale_files"])
+            self.assertIn("_internal/new.dll", diff["to_update"])
+            self.assertIn("Vitarg.exe", diff["unchanged"])
 
 
 class NewFeaturesTests(unittest.TestCase):

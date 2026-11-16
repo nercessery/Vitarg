@@ -1,13 +1,15 @@
 """GitHub Releases auto-updater for Vitarg: checks for updates, downloads setup, and launches installer."""
 from __future__ import annotations
-import json, os, re, subprocess, sys, tempfile, threading
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
 from pathlib import Path
 from typing import Optional
 import urllib.request
 import urllib.error
 
+from . import engine
+
 GITHUB_REPOS = ["nercessery/Vitarg"]
-USER_AGENT = "Vitarg-App/1.0.3"
+USER_AGENT = "Vitarg-App/1.0.3.2"
 
 try:
     from PySide6.QtCore import Qt, QThread, Signal, QTimer
@@ -29,7 +31,7 @@ except ImportError:
 
 
 def parse_semver(tag: str) -> tuple[int, ...]:
-    """Parse 'v2.1.0' or '2.1.0' into (2, 1, 0)."""
+    """Parse 'v2.1.0' or '1.0.3.2' into (2, 1, 0) or (1, 0, 3, 2)."""
     clean = re.sub(r"^[vV]", "", tag.strip())
     parts = []
     for p in clean.split("."):
@@ -43,6 +45,125 @@ def parse_semver(tag: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def compute_file_sha256(path: Path) -> str:
+    """Compute SHA-256 hash of a file efficiently in 64KB chunks."""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def generate_manifest(app_root: Path, version: str = "1.0.3.2") -> dict:
+    """Generate a manifest mapping relative file paths to their size and SHA-256 hash."""
+    app_root = Path(app_root).resolve()
+    manifest = {
+        "version": version,
+        "generated_at": int(time.time()),
+        "files": {},
+    }
+    for item in sorted(app_root.rglob("*")):
+        if not item.is_file():
+            continue
+        rel = str(item.relative_to(app_root)).replace("\\", "/")
+        if any(part.startswith((".", "__pycache__")) for part in rel.split("/")):
+            continue
+        try:
+            sz = item.stat().st_size
+            sha = compute_file_sha256(item)
+            manifest["files"][rel] = {"size": sz, "sha256": sha}
+        except Exception:
+            pass
+    return manifest
+
+
+def diff_local_with_manifest(app_root: Path, manifest: dict) -> dict:
+    """Compare local installed files with remote release manifest.
+
+    Returns:
+        {
+            "tools_intact": bool,
+            "to_update": list[str],
+            "unchanged": list[str],
+            "stale_files": list[str],
+        }
+    """
+    app_root = Path(app_root).resolve()
+    files_map = manifest.get("files", {})
+
+    # Check critical tools
+    if sys.platform == "win32":
+        crit_tools = ["tools/ffmpeg.exe", "tools/ffprobe.exe"]
+    else:
+        crit_tools = ["tools/ffmpeg", "tools/ffprobe"]
+
+    tools_intact = True
+    for ct in crit_tools:
+        local_tool = app_root / ct
+        if not local_tool.exists() or local_tool.stat().st_size < 1000:
+            tools_intact = False
+            break
+
+    to_update = []
+    unchanged = []
+    for rel_str, meta in files_map.items():
+        lp = app_root / rel_str
+        if not lp.exists():
+            to_update.append(rel_str)
+            continue
+        try:
+            if lp.stat().st_size != meta.get("size", 0):
+                to_update.append(rel_str)
+                continue
+            if meta.get("sha256") and compute_file_sha256(lp) != meta["sha256"]:
+                to_update.append(rel_str)
+                continue
+            unchanged.append(rel_str)
+        except Exception:
+            to_update.append(rel_str)
+
+    # Detect stale files inside _internal (clean up old version leftovers)
+    stale_files = []
+    internal_dir = app_root / "_internal"
+    if internal_dir.exists():
+        for item in internal_dir.rglob("*"):
+            if not item.is_file():
+                continue
+            rel_str = str(item.relative_to(app_root)).replace("\\", "/")
+            if rel_str not in files_map:
+                stale_files.append(rel_str)
+
+    return {
+        "tools_intact": tools_intact,
+        "to_update": to_update,
+        "unchanged": unchanged,
+        "stale_files": stale_files,
+    }
+
+
+def clean_stale_temp_installers(max_age_seconds: int = 1800) -> int:
+    """Clean up old downloaded installer executables and zip packages from %TEMP%."""
+    temp_dir = Path(tempfile.gettempdir())
+    now = time.time()
+    removed = 0
+    patterns = ("Vitarg-Setup*.exe", "Vitarg-*.zip", "vitarg_staged*")
+    for pat in patterns:
+        for p in temp_dir.glob(pat):
+            try:
+                if (now - p.stat().st_mtime) > max_age_seconds:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    removed += 1
+            except Exception:
+                pass
+    return removed
+
+
 def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], str]:
     """Check GitHub API for a newer release. Returns (release_dict or None, status_message)."""
     cur_v = parse_semver(current_version)
@@ -52,7 +173,6 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
     }
     last_err = ""
     for repo in GITHUB_REPOS:
-        # Check /releases/latest first, fallback to /releases list
         endpoints = [
             f"https://api.github.com/repos/{repo}/releases/latest",
             f"https://api.github.com/repos/{repo}/releases",
@@ -75,12 +195,20 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                         remote_v = parse_semver(tag)
                         if remote_v > cur_v:
                             assets = data.get("assets", [])
+                            manifest_asset = None
+                            app_zip_asset = None
+                            setup_asset = None
+
                             target_ext = ".exe" if sys.platform == "win32" else ".tar.gz"
                             for a in assets:
                                 name = a.get("name", "").lower()
-                                if ("setup" in name or "vitarg" in name or "linux" in name) and name.endswith(target_ext):
+                                if name == "manifest.json":
+                                    manifest_asset = a
+                                elif name in ("vitarg-app.zip", "vitarg-update.zip") or name.endswith("-app.zip"):
+                                    app_zip_asset = a
+                                elif ("setup" in name or "vitarg" in name or "linux" in name) and name.endswith(target_ext):
                                     setup_asset = a
-                                    break
+
                             if not setup_asset and assets:
                                 for a in assets:
                                     if a.get("name", "").lower().endswith(target_ext):
@@ -91,15 +219,39 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                                     if a.get("name", "").lower().endswith((".tar.gz", ".zip", ".appimage")):
                                         setup_asset = a
                                         break
-                            if setup_asset:
+
+                            # Check local tools
+                            local_app = engine.app_dir()
+                            has_local_tools = False
+                            if sys.platform == "win32":
+                                has_local_tools = (local_app / "tools" / "ffmpeg.exe").exists() and (local_app / "tools" / "ffprobe.exe").exists()
+                            else:
+                                has_local_tools = bool(shutil.which("ffmpeg") or (local_app / "tools" / "ffmpeg").exists())
+
+                            is_delta = False
+                            chosen_asset = None
+                            if sys.platform == "win32" and app_zip_asset and has_local_tools:
+                                is_delta = True
+                                chosen_asset = app_zip_asset
+                            elif setup_asset:
+                                chosen_asset = setup_asset
+                            elif app_zip_asset:
+                                chosen_asset = app_zip_asset
+                            elif assets:
+                                chosen_asset = assets[0]
+
+                            if chosen_asset:
                                 return {
                                     "repo": repo,
                                     "version": tag,
                                     "name": data.get("name") or f"Vitarg {tag}",
                                     "notes": data.get("body", "").strip(),
-                                    "download_url": setup_asset.get("browser_download_url"),
-                                    "asset_name": setup_asset.get("name"),
-                                    "size": setup_asset.get("size", 0),
+                                    "download_url": chosen_asset.get("browser_download_url"),
+                                    "asset_name": chosen_asset.get("name"),
+                                    "size": chosen_asset.get("size", 0),
+                                    "is_delta": is_delta,
+                                    "manifest_url": manifest_asset.get("browser_download_url") if manifest_asset else None,
+                                    "setup_url": setup_asset.get("browser_download_url") if setup_asset else None,
                                 }, f"New release {tag} available!"
                             else:
                                 return None, f"Release {tag} found, but release asset ({target_ext}) is still compiling."
@@ -138,16 +290,16 @@ class UpdateCheckThread(QThread):
             rel, msg = check_github_update_detailed(self.current_version)
             self.finished_check.emit(rel, msg)
         except Exception as e:
-            self.finished_check.emit(None, f"Check failed: {e}")
+            self.finished_check.emit(None, f"Update check failed: {e}")
 
 
 class DownloadThread(QThread):
-    progress = Signal(float, int, int)      # fraction (0.0..1.0), downloaded_bytes, total_bytes
-    finished = Signal(str)                  # path to downloaded installer
+    progress = Signal(float, int, int)       # fraction (0.0 - 1.0), bytes_dl, bytes_total
+    finished = Signal(str)                  # path to downloaded file
     failed = Signal(str)                    # error message
 
-    def __init__(self, download_url: str, filename: str):
-        super().__init__()
+    def __init__(self, download_url: str, filename: str, parent=None):
+        super().__init__(parent)
         self.url = download_url
         self.filename = filename
         self._cancelled = False
@@ -192,7 +344,14 @@ class UpdateDialog(Panel):
         self.cur_v = current_version
         self.dl_thread: Optional[DownloadThread] = None
 
-        ver_label = QLabel(f"A new version of Vitarg is available: <b>{release_info['version']}</b> (Current: {current_version})")
+        mb = self.info.get("size", 0) / 1048576.0
+        delta_tag = ""
+        if self.info.get("is_delta"):
+            delta_tag = f'<br><span style="color: #34D399; font-weight: bold;">⚡ Smart Delta Update ({mb:.1f} MB) — existing tools preserved, fast update</span>'
+        else:
+            delta_tag = f'<br><span style="color: #60A5FA;">📦 Full Package ({mb:.1f} MB)</span>'
+
+        ver_label = QLabel(f"A new version of Vitarg is available: <b>{release_info['version']}</b> (Current: {current_version}){delta_tag}")
         ver_label.setWordWrap(True)
         self.body.addWidget(ver_label)
 
@@ -273,14 +432,13 @@ class UpdateDialog(Panel):
         else:
             self.status.setText(f"Downloading: {mb_dl:.1f} MB...")
 
-    def _on_finished(self, installer_path: str):
+    def _on_finished(self, downloaded_path: str):
         if sys.platform == "win32":
-            self.status.setText("Download complete! Launching installer...")
+            self.status.setText("Download complete! Applying update...")
             self.bar.setValue(100)
-            # Start the installer and close Vitarg so files are replaced cleanly
-            QTimer.singleShot(500, lambda: self._launch_installer_and_exit(installer_path))
+            QTimer.singleShot(500, lambda: self._apply_update_and_exit(downloaded_path))
         else:
-            self.status.setText(f"Download complete!\nSaved to: {installer_path}")
+            self.status.setText(f"Download complete!\nSaved to: {downloaded_path}")
             self.bar.setValue(100)
             self.btn_later.setText("Close")
             self.btn_update.setText("Open Folder")
@@ -289,17 +447,59 @@ class UpdateDialog(Panel):
                 self.btn_update.clicked.disconnect()
             except Exception:
                 pass
-            self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(Path(installer_path).parent)]))
+            self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(Path(downloaded_path).parent)]))
 
-    def _launch_installer_and_exit(self, installer_path: str):
+    def _apply_update_and_exit(self, downloaded_path: str):
+        dl_p = Path(downloaded_path)
         try:
-            # Launch Inno Setup installer
-            subprocess.Popen([installer_path], creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0)
+            if dl_p.suffix.lower() == ".zip":
+                # Smart Delta Update: extract to staging folder and apply
+                staging_dir = Path(tempfile.gettempdir()) / f"vitarg_staged_{int(time.time())}"
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(dl_p, "r") as zf:
+                    zf.extractall(staging_dir)
+
+                target_dir = engine.app_dir()
+                target_exe = target_dir / "Vitarg.exe"
+                bat_path = Path(tempfile.gettempdir()) / "vitarg_apply_delta.bat"
+
+                # Batch script to overwrite changed files, clean staging + zip, and restart
+                bat_content = (
+                    "@echo off\r\n"
+                    "setlocal\r\n"
+                    f'set "STAGING={staging_dir}"\r\n'
+                    f'set "TARGET={target_dir}"\r\n'
+                    f'set "EXE={target_exe}"\r\n'
+                    f'set "ZIP={dl_p}"\r\n'
+                    "\r\n"
+                    ":: Wait 2 seconds for Vitarg process to terminate cleanly\r\n"
+                    "timeout /t 2 /nobreak >nul\r\n"
+                    "\r\n"
+                    ":: Robocopy new files into target directory\r\n"
+                    'robocopy "%STAGING%" "%TARGET%" /E /NP /NFL /NDL /NJH /NJS >nul\r\n'
+                    "\r\n"
+                    ":: Clean up staging folder and temporary zip\r\n"
+                    'rmdir /S /Q "%STAGING%" >nul 2>&1\r\n'
+                    'del /F /Q "%ZIP%" >nul 2>&1\r\n'
+                    "\r\n"
+                    ":: Restart updated Vitarg\r\n"
+                    'start "" "%EXE%"\r\n'
+                    "exit\r\n"
+                )
+                bat_path.write_text(bat_content, encoding="utf-8")
+                subprocess.Popen(["cmd.exe", "/c", str(bat_path)], creationflags=subprocess.DETACHED_PROCESS)
+            else:
+                # Full Inno Setup installer
+                subprocess.Popen(
+                    [str(dl_p), "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+                    creationflags=subprocess.DETACHED_PROCESS
+                )
         except Exception as e:
-            self.status.setText(f"Could not launch installer: {e}")
+            self.status.setText(f"Could not apply update: {e}")
             self.btn_update.setEnabled(True)
             return
-        # Quit current Vitarg app immediately
+
+        # Clean quit current Vitarg app immediately
         from PySide6.QtWidgets import QApplication
         QApplication.instance().quit()
 
