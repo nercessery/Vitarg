@@ -15,7 +15,7 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 | Category | Formats |
 |---|---|
 | **Image** | PNG, JPG, WebP, BMP, TIFF, GIF, ICO, HEIC, SVG → each other, PDF, DOCX |
-| **Audio** | MP3, WAV, FLAC, AAC, OGG, M4A, OPUS, WMA, AIFF |
+| **Audio** | MP3, WAV, FLAC, AAC, OGG, M4A, OPUS, WMA, AIFF, AC3, ALAC, AMR |
 | **Video** | MP4, MKV, MOV, AVI, WebM, WMV, FLV (+ GIF output, audio extraction) |
 | **Document** | PDF ↔ DOCX/JPG/PNG/TXT, TXT/MD/HTML/DOCX ↔ each other |
 | **Archive** | ZIP, TAR, GZ, 7Z |
@@ -38,11 +38,20 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 - **Collage** — Arrange photos into responsive grid collages.
 - **Join Videos** — Concat multiple video files with automatic aspect matching.
 - **Extract** — One-click unpack for ZIP, TAR, GZ, and 7Z archives.
+- **Target Size (Target Compress)** — Target-size 2-pass H.264 video compression for Discord (<25 MB), Discord Nitro (<50 MB), Email (<10 MB), WhatsApp (<8 MB), or custom target MB limits.
+- **Volume Boost** — Amplify audio volume from 10% up to 600% with live waveform preview and 2-second audio sample audition.
+- **Audio Equalizer** — 6-preset audio equalization (Bass Boost, Ultra Bass, Vocal Boost, Treble Boost, Loudness & Clarity, Flat) with real-time waveform display.
+- **Extract Text** — Extract text from PDF documents and images (with OCR support) directly to `.txt` files, clipboard, or both.
 
 ### ⚡ Smart Productivity Tools
 - **Undo / Rollback (Ctrl+Z)** — Revert the last operation with one click from the completion dialog, tray menu, or Settings. Safely deletes generated files and restores any backed-up originals.
 - **Pre-Action Rename & Custom Naming** — Review and customize output file names or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) before converting or running tools, with live output preview and automatic extension handling.
 - **Conversion Preview & Size Estimator** — Real-time estimation of output file size and quality ratio before and during processing.
+- **Visual PDF Organizer & Multi-File Drop** — Interactive visual reordering modal for merging PDFs and compiling images into PDF with drag-and-drop page sequencing, thumbnail previews, page deletion, and custom naming.
+- **Clipboard Quick Convert Popup** — Convert and export image data directly from the system clipboard to any supported format (PNG, JPG, WebP, PDF) via the tray icon or drop target menu.
+- **Size Difference & Visual Stats Card** — Post-conversion statistics card in the completion dialog displaying exact before/after file sizes, percentage savings, and saved disk space with color-coded feedback.
+- **Desktop Context Menu Integration** — Seamless right-click file manager integration ("Convert with Vitarg") for Windows Explorer, GNOME/Nautilus scripts, and KDE Plasma/Dolphin ServiceMenus.
+- **Live Audio Sample Preview** — Interactive 2-second audio sample audition directly inside tool configuration dialogs (Volume Boost, EQ) before applying conversion.
 
 ---
 

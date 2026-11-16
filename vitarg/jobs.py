@@ -175,8 +175,19 @@ class JobWindow(Panel):
 
         # Size Comparison & Visual Stats Card
         try:
-            in_sz = sum(Path(s).stat().st_size for s in self.sources if Path(s).exists())
-            out_sz = sum(Path(o).stat().st_size for o in outs if Path(o).exists())
+            def _item_sz(p):
+                try:
+                    p = Path(p)
+                    if not p.exists():
+                        return 0
+                    if p.is_dir():
+                        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                    return p.stat().st_size
+                except OSError:
+                    return 0
+
+            in_sz = sum(_item_sz(s) for s in self.sources)
+            out_sz = sum(_item_sz(o) for o in outs)
             if in_sz > 0 and out_sz > 0:
                 diff = out_sz - in_sz
                 pct = (abs(diff) / in_sz) * 100.0

@@ -101,7 +101,7 @@ class DropTargetWidget(QWidget):
             menu.addAction("📋 Convert Clipboard Image…", self.ctl.convert_clipboard_action)
             menu.addAction("Select Files…", self.ctl.select_files_dialog)
             menu.addAction("Settings…", self.ctl.open_settings)
-            menu.addAction("Hide Drop Target", self.hide)
+            menu.addAction("Hide Drop Target", lambda: self.ctl.act_drop.setChecked(False))
             menu.exec(e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
@@ -163,7 +163,7 @@ class Controller:
 
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
-        elif sys.platform != "win32":
+        if sys.platform != "win32":
             self.drop_target.show()
             self.act_drop.setChecked(True)
 
@@ -328,6 +328,8 @@ class Controller:
                 if not dlg.exec():
                     return
                 paths = dlg.ordered_paths()
+                if not paths:
+                    return
                 custom_name = dlg.output_name()
                 is_all_pdf = all(engine.fmt_of(p) == "pdf" for p in paths)
                 tool_to_run = "merge_pdf" if is_all_pdf else "create_pdf"
@@ -363,6 +365,8 @@ class Controller:
                 if not dlg.exec():
                     return
                 paths = dlg.ordered_paths()
+                if not paths:
+                    return
                 custom_name = dlg.output_name()
                 params["custom_name"] = custom_name
             elif tool.form:

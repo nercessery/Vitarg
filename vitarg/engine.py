@@ -290,7 +290,7 @@ AUDIO_CODEC = {
     "wma": ["-c:a", "wmav2", "-b:a", "{abr}k"],
     "aiff": ["-c:a", "pcm_s16be"],
     "ac3": ["-c:a", "ac3", "-b:a", "{abr}k"],
-    "alac": ["-c:a", "alac"],
+    "alac": ["-c:a", "alac", "-f", "ipod"],
     "amr": ["-c:a", "libopencore_amrnb", "-ar", "8000", "-ab", "12.2k"],
 }
 EVEN = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
@@ -334,7 +334,7 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel)
                 if skip_next:
                     skip_next = False
                     continue
-                if a in ("-c:a", "-b:a"):
+                if a in ("-c:a", "-b:a", "-q:a"):
                     skip_next = True
                     continue
                 clean_v.append(a)

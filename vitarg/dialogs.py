@@ -250,7 +250,8 @@ class FormDialog(Panel):
                         for player in ("paplay", "aplay", "pw-play", "ffplay"):
                             p = shutil.which(player)
                             if p:
-                                subprocess.run([p, tmp_wav], capture_output=True)
+                                cmd = [p, "-nodisp", "-autoexit", tmp_wav] if player == "ffplay" else [p, tmp_wav]
+                                subprocess.run(cmd, capture_output=True)
                                 break
             finally:
                 try:
@@ -590,14 +591,19 @@ class PdfOrganizerDialog(Panel):
         row = QHBoxLayout()
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
-        ok = QPushButton("Create PDF ⚡")
-        ok.setObjectName("primary")
-        ok.setDefault(True)
-        ok.clicked.connect(self.accept)
+        self.ok_btn = QPushButton("Create PDF ⚡")
+        self.ok_btn.setObjectName("primary")
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self.accept)
         row.addWidget(cancel)
         row.addStretch(1)
-        row.addWidget(ok)
+        row.addWidget(self.ok_btn)
         self.body.addLayout(row)
+        self._update_ok_btn()
+
+    def _update_ok_btn(self):
+        if hasattr(self, "ok_btn"):
+            self.ok_btn.setEnabled(self.list_widget.count() > 0)
 
     def _populate_list(self, paths):
         from pathlib import Path
@@ -630,6 +636,7 @@ class PdfOrganizerDialog(Panel):
                 except Exception:
                     pass
             self.list_widget.addItem(item)
+        self._update_ok_btn()
 
     def _move_up(self):
         row = self.list_widget.currentRow()
@@ -649,12 +656,19 @@ class PdfOrganizerDialog(Panel):
         row = self.list_widget.currentRow()
         if row >= 0:
             self.list_widget.takeItem(row)
+            self._update_ok_btn()
 
     def _add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files to Add to PDF")
         if files:
             from pathlib import Path
             self._populate_list([Path(f) for f in files])
+
+    def accept(self):
+        if self.list_widget.count() == 0:
+            QMessageBox.warning(self, "No files", "Please keep at least one file to create a PDF.")
+            return
+        super().accept()
 
     def ordered_paths(self) -> list[str]:
         res = []
@@ -745,8 +759,9 @@ class ClipboardConvertDialog(Panel):
 
         try:
             from PIL import Image
-            buffer = self.qimg.bits().tobytes()
-            pil_im = Image.frombuffer("RGBA", (self.qimg.width(), self.qimg.height()), buffer, "raw", "BGRA", 0, 1)
+            conv = self.qimg.convertToFormat(QImage.Format_ARGB32)
+            buffer = conv.bits().tobytes()
+            pil_im = Image.frombuffer("RGBA", (conv.width(), conv.height()), buffer, "raw", "BGRA", 0, 1)
 
             if fmt == "png":
                 pil_im.save(out_path, "PNG", optimize=True)

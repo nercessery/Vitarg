@@ -358,6 +358,8 @@ def collage(srcs, ws: Workspace, p: dict) -> Path:
 
 
 def images_to_pdf(srcs, ws: Workspace) -> Path:
+    if not srcs:
+        raise ConversionError("No files selected to convert.")
     from PIL import ImageOps
     raws = []
     try:
@@ -554,6 +556,8 @@ def pdf_split(src: Path, ws: Workspace) -> Path:
 
 
 def pdf_merge(srcs, ws: Workspace) -> Path:
+    if not srcs:
+        raise ConversionError("No files selected to merge.")
     fz = engine._fitz()
     with fz.open() as merged:
         for s in srcs:
@@ -754,7 +758,8 @@ def volume_boost(src: Path, ws: Workspace, params: dict, progress, cancel) -> Pa
     vol_filter = f"volume={factor:.2f}"
 
     if fam == "video":
-        args = ["-i", str(src), "-c:v", "copy", "-filter:a", vol_filter, "-c:a", "aac", "-b:a", "192k", str(out)]
+        a_codec = ["-c:a", "libopus", "-b:a", "128k"] if sf == "webm" else ["-c:a", "aac", "-b:a", "192k"]
+        args = ["-i", str(src), "-c:v", "copy", "-filter:a", vol_filter, *a_codec, str(out)]
     else:
         if sf == "mp3":
             args = ["-i", str(src), "-filter:a", vol_filter, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
@@ -788,7 +793,8 @@ def audio_equalizer(src: Path, ws: Workspace, params: dict, progress, cancel) ->
     out = _out(ws, src, f"EQ_{slug}")
 
     if fam == "video":
-        args = ["-i", str(src), "-c:v", "copy", "-filter:a", af, "-c:a", "aac", "-b:a", "192k", str(out)]
+        a_codec = ["-c:a", "libopus", "-b:a", "128k"] if sf == "webm" else ["-c:a", "aac", "-b:a", "192k"]
+        args = ["-i", str(src), "-c:v", "copy", "-filter:a", af, *a_codec, str(out)]
     else:
         if sf == "mp3":
             args = ["-i", str(src), "-filter:a", af, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
@@ -815,7 +821,8 @@ def extract_text_tool(src: Path, ws: Workspace, params: dict) -> Path:
         except Exception:
             from .inspector import get_file_info
             info = get_file_info(src)
-            text = f"File: {info['name']}\nDimensions: {info['dimensions']}\nFormat: {info['format']}\nSHA256: {info['sha256']}\n"
+            dims = info.get("media", {}).get("Dimensions", "N/A")
+            text = f"File: {info['name']}\nDimensions: {dims}\nFormat: {info['format']}\nSHA256: {info['sha256']}\n"
 
     if not text or not text.strip():
         raise ConversionError("No text could be extracted from this file.")
@@ -823,10 +830,19 @@ def extract_text_tool(src: Path, ws: Workspace, params: dict) -> Path:
     target = params.get("target", ".txt File")
     if target in ("Copy to Clipboard", "Both"):
         try:
+            from PySide6.QtCore import QTimer, QThread
             from PySide6.QtGui import QGuiApplication
-            clip = QGuiApplication.clipboard()
-            if clip:
-                clip.setText(text)
+            app = QGuiApplication.instance()
+            if app:
+                def _copy():
+                    c = app.clipboard()
+                    if c:
+                        c.setText(text)
+
+                if QThread.currentThread() == app.thread():
+                    _copy()
+                else:
+                    QTimer.singleShot(0, app, _copy)
         except Exception:
             pass
 
@@ -846,6 +862,8 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
             raise ConversionError(f"Source file not found: {s}")
     outs, errs = [], []
     if t.multi:
+        if not sources:
+            raise ConversionError("No source files provided.")
         with Workspace(settings, sources[0]) as ws:
             if tool_id == "merge_pdf":
                 pdf_merge(sources, ws)

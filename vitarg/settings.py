@@ -297,7 +297,7 @@ def set_context_menu(enabled: bool) -> bool:
             return False
     elif sys.platform.startswith("linux"):
         try:
-            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
             nautilus_dir = Path.home() / ".local" / "share" / "nautilus" / "scripts"
             kde_dir = Path.home() / ".local" / "share" / "kio" / "servicemenus"
             script_path = nautilus_dir / "Convert with Vitarg"
