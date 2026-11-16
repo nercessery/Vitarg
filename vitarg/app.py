@@ -195,6 +195,8 @@ class Controller:
                 files = payload.get("files", [])
                 if files:
                     self.present_files(files)
+            elif action == "select":
+                self.select_files_dialog(payload.get("initial_dir"))
             elif action == "activate":
                 self.open_settings()
         except Exception:
@@ -234,8 +236,9 @@ class Controller:
         gx, gy = self._get_invocation_pos()
         self.wheel.present("conv", valid, gx, gy)
 
-    def select_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(None, "Select Files to Convert with Vitarg")
+    def select_files_dialog(self, initial_dir: Optional[str] = None):
+        start_dir = initial_dir if (initial_dir and os.path.isdir(initial_dir)) else ""
+        files, _ = QFileDialog.getOpenFileNames(None, "Select Files to Convert with Vitarg", start_dir)
         if files:
             self.present_files(files)
 
@@ -414,8 +417,18 @@ def main():
     if "--selftest" in sys.argv:
         return selftest()
 
-    # Extract CLI file arguments
-    cli_files = [os.path.abspath(arg) for arg in sys.argv[1:] if not arg.startswith("-") and os.path.exists(arg)]
+    # Extract CLI arguments
+    select_mode = "--select" in sys.argv
+    cli_files = []
+    initial_dir = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("-"):
+            continue
+        p = os.path.abspath(arg)
+        if os.path.isfile(p):
+            cli_files.append(p)
+        elif os.path.isdir(p) and initial_dir is None:
+            initial_dir = p
 
     server_name = f"vitarg-ipc-{os.getenv('USER') or os.getenv('USERNAME') or 'default'}"
     app = QApplication(sys.argv)
@@ -428,6 +441,8 @@ def main():
     if sock.waitForConnected(200):
         if cli_files:
             msg = json.dumps({"action": "open", "files": cli_files}).encode("utf-8")
+        elif select_mode or initial_dir:
+            msg = json.dumps({"action": "select", "initial_dir": initial_dir or ""}).encode("utf-8")
         else:
             msg = json.dumps({"action": "activate"}).encode("utf-8")
         sock.write(msg)
@@ -448,10 +463,18 @@ def main():
     app.ctl = ctl
 
     try:
+        import threading
         from .updater import clean_stale_temp_installers
         threading.Thread(target=clean_stale_temp_installers, daemon=True).start()
     except Exception:
         pass
+
+    if getattr(settings, "context_menu", True):
+        try:
+            from .settings import set_context_menu
+            set_context_menu(True)
+        except Exception:
+            pass
 
     if first_run:
         settings.save()
@@ -464,5 +487,7 @@ def main():
 
     if cli_files:
         QTimer.singleShot(250, lambda: ctl.present_files(cli_files))
+    elif select_mode or initial_dir:
+        QTimer.singleShot(250, lambda: ctl.select_files_dialog(initial_dir))
 
     return app.exec()

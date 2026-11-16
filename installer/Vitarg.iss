@@ -22,6 +22,24 @@ Type: filesandordirs; Name: "{app}\_internal"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "contextmenu"; Description: "Add 'Convert with Vitarg' to context menu (files and desktop background)"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\*\shell\Vitarg"; ValueType: string; ValueName: ""; ValueData: "Convert with Vitarg"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\Vitarg"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\Vitarg.exe"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\Vitarg\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Vitarg.exe"" ""%1"""; Tasks: contextmenu; Flags: uninsdeletekey
+
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Vitarg"; ValueType: string; ValueName: ""; ValueData: "Convert with Vitarg"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Vitarg"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\Vitarg.exe"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Vitarg\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Vitarg.exe"" ""%1"""; Tasks: contextmenu; Flags: uninsdeletekey
+
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Vitarg"; ValueType: string; ValueName: ""; ValueData: "Convert with Vitarg"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Vitarg"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\Vitarg.exe"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Vitarg\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Vitarg.exe"" --select ""%V"""; Tasks: contextmenu; Flags: uninsdeletekey
+
+Root: HKCU; Subkey: "Software\Classes\DesktopBackground\shell\Vitarg"; ValueType: string; ValueName: ""; ValueData: "Convert with Vitarg"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\DesktopBackground\shell\Vitarg"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\Vitarg.exe"; Tasks: contextmenu; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\DesktopBackground\shell\Vitarg\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Vitarg.exe"" --select ""%V"""; Tasks: contextmenu; Flags: uninsdeletekey
 
 [Files]
 Source: "..\dist\Vitarg\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion

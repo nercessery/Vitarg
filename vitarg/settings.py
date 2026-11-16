@@ -98,7 +98,7 @@ class Settings:
     enabled: bool = True
     auto_update: bool = True             # automatically check for updates on startup
     prompt_rename: bool = True           # prompt to review/edit file name before running
-    context_menu: bool = False           # Windows Explorer / Linux context menu integration
+    context_menu: bool = True            # Windows Explorer / Linux context menu integration
 
     # ---- persistence -------------------------------------------------
     @staticmethod
@@ -265,25 +265,28 @@ def set_context_menu(enabled: bool) -> bool:
     """Register or unregister 'Convert with Vitarg' in the Windows Explorer or Linux file manager context menu."""
     if sys.platform == "win32":
         import winreg
-        targets = [
-            (winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Vitarg"),
-            (winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Vitarg"),
-        ]
         exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
         ico = str(Path(__file__).resolve().parent.parent / "assets" / "vitarg.ico")
         icon_arg = sys.executable if getattr(sys, "frozen", False) else (ico if os.path.exists(ico) else sys.executable)
 
+        targets = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Vitarg", f'{exe} "%1"'),
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Vitarg", f'{exe} "%1"'),
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\Background\shell\Vitarg", f'{exe} --select "%V"'),
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\DesktopBackground\shell\Vitarg", f'{exe} --select "%V"'),
+        ]
+
         try:
             if enabled:
-                for root, key_path in targets:
+                for root, key_path, cmd in targets:
                     with winreg.CreateKey(root, key_path) as k:
                         winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "Convert with Vitarg")
                         winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_arg)
                     with winreg.CreateKey(root, key_path + r"\command") as k:
-                        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, f'{exe} "%1"')
+                        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd)
                 return True
             else:
-                for root, key_path in targets:
+                for root, key_path, _ in targets:
                     try:
                         winreg.DeleteKey(root, key_path + r"\command")
                     except (FileNotFoundError, OSError):

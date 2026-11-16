@@ -509,7 +509,30 @@ class V103FeatureTests(unittest.TestCase):
     def test_context_menu_settings_default(self):
         from vitarg import settings as S
         st = S.Settings()
-        self.assertFalse(st.context_menu)
+        self.assertTrue(st.context_menu)
+
+    def test_context_menu_registration_windows(self):
+        import sys
+        if sys.platform != "win32":
+            return
+        import winreg
+        from vitarg import settings as S
+        # Enable
+        ok = S.set_context_menu(True)
+        self.assertTrue(ok)
+        # Check keys exist
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\DesktopBackground\shell\Vitarg") as k:
+            val, _ = winreg.QueryValueEx(k, "")
+            self.assertEqual(val, "Convert with Vitarg")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\Background\shell\Vitarg") as k:
+            val, _ = winreg.QueryValueEx(k, "")
+            self.assertEqual(val, "Convert with Vitarg")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Vitarg") as k:
+            val, _ = winreg.QueryValueEx(k, "")
+            self.assertEqual(val, "Convert with Vitarg")
+        # Disable
+        ok_off = S.set_context_menu(False)
+        self.assertTrue(ok_off)
 
     def test_context_menu_registration_linux(self):
         import os, tempfile, shutil
