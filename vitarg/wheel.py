@@ -34,11 +34,13 @@ class Wheel(QWidget):
         self.items: list[tuple[str, str, str]] = []     # (id, label, icon)
         self.hover = -1
         self._shape_cache = []
+        self.interactive = False
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
                             Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAcceptDrops(True)
+        self.setMouseTracking(True)
         self.setFixedSize(SIZE, SIZE)
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.fade.setDuration(130)
@@ -177,7 +179,8 @@ class Wheel(QWidget):
         p.drawText(cap, Qt.AlignCenter, txt)
 
     # showing / hiding ------------------------------------------------
-    def present(self, kind: str, paths: list[str], gx: int, gy: int):
+    def present(self, kind: str, paths: list[str], gx: int, gy: int, interactive: bool = False):
+        self.interactive = interactive
         self.set_content(kind, paths)
         if (gx == 0 and gy == 0) or gx is None or gy is None:
             scr = QGuiApplication.primaryScreen()
@@ -189,11 +192,27 @@ class Wheel(QWidget):
         x = min(max(gx - SIZE // 2, geom.left()), geom.right() - SIZE)
         y = min(max(gy - SIZE // 2, geom.top()), geom.bottom() - SIZE)
         self.move(int(x), int(y))
+
+        needed_flags = (Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint) if interactive else (
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint
+        )
+        if self.windowFlags() != needed_flags:
+            self.setWindowFlags(needed_flags)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, not interactive)
+
         if not self.isVisible():
             self.setWindowOpacity(0.0)
             self.show()
             self.fade.stop(); self.fade.setStartValue(0.0); self.fade.setEndValue(1.0); self.fade.start()
             self.pop.stop(); self.pop.setStartValue(0.88); self.pop.setEndValue(1.0); self.pop.start()
+        else:
+            self.show()
+
+        if interactive:
+            self.activateWindow()
+            self.setFocus()
+
         self.raise_()
         glass.apply(self, "ellipse", inset=(SIZE / 2 - R_RING))
 
@@ -201,6 +220,47 @@ class Wheel(QWidget):
         if self.isVisible():
             self.hide()
         self.hover = -1
+
+    # Mouse & Keyboard interaction (interactive click & dismiss) --------
+    def mouseMoveEvent(self, e):
+        self._set_hover(self._hit(e.position()))
+
+    def leaveEvent(self, e):
+        self._set_hover(-1)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            self.dismiss()
+            return
+        if e.button() == Qt.LeftButton:
+            i = self._hit(e.position())
+            if 0 <= i < len(self.items):
+                kind, ident, paths = self.kind, self.items[i][0], list(self.paths)
+                self.dismiss()
+                QTimer.singleShot(0, lambda: self.chosen.emit(kind, ident, paths))
+                return
+            # Clicked outside petals or on center capsule: dismiss
+            self.dismiss()
+
+    def mouseReleaseEvent(self, e):
+        pass
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Escape, Qt.Key_Back):
+            self.dismiss()
+        else:
+            super().keyPressEvent(e)
+
+    def changeEvent(self, e):
+        from PySide6.QtCore import QEvent
+        if e.type() in (QEvent.ActivationChange, QEvent.WindowDeactivate):
+            if getattr(self, "interactive", False) and not self.isActiveWindow():
+                self.dismiss()
+        super().changeEvent(e)
+
+    def hideEvent(self, e):
+        self.hover = -1
+        super().hideEvent(e)
 
     # OLE drag & drop -------------------------------------------------
     @staticmethod

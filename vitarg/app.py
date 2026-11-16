@@ -234,7 +234,7 @@ class Controller:
         if not valid:
             return
         gx, gy = self._get_invocation_pos()
-        self.wheel.present("conv", valid, gx, gy)
+        self.wheel.present("conv", valid, gx, gy, interactive=True)
 
     def select_files_dialog(self, initial_dir: Optional[str] = None):
         start_dir = initial_dir if (initial_dir and os.path.isdir(initial_dir)) else ""

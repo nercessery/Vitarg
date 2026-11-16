@@ -175,7 +175,7 @@ class VitargUpdaterSemver(unittest.TestCase):
         import vitarg.cropmath as vc
         import vitarg.keys as vk
         import vitarg.settings as vs
-        self.assertEqual(vitarg.__version__, "1.0.3.2")
+        self.assertEqual(vitarg.__version__, "1.0.4")
         s = vs.Settings()
         self.assertEqual(s.tint, "#12111A")
         self.assertEqual(s.highlight, "#7C3AED")
@@ -567,6 +567,58 @@ class V103FeatureTests(unittest.TestCase):
         self.assertAlmostEqual(pct, 84.0, places=0)
         self.assertEqual(format_size(s1), "25.0 MB")
         self.assertEqual(format_size(s2), "4.0 MB")
+
+
+    def test_wheel_interactive_click_and_dismiss(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt, QPointF, QEvent
+            from PySide6.QtGui import QMouseEvent, QKeyEvent
+            from vitarg.settings import Settings
+            from vitarg.wheel import Wheel
+        except ImportError:
+            return
+
+        app = QApplication.instance() or QApplication([])
+        s = Settings()
+        wheel = Wheel(s)
+
+        # 1. Present in interactive mode
+        wheel.present('conv', ['test.png'], 400, 400, interactive=True)
+        self.assertTrue(wheel.isVisible())
+        self.assertTrue(wheel.interactive)
+
+        # 2. Hover petal
+        m_move = QMouseEvent(QEvent.MouseMove, QPointF(220, 80), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+        app.sendEvent(wheel, m_move)
+        self.assertEqual(wheel.hover, 0)
+
+        # 3. Petal click emits chosen and dismisses
+        chosen_data = []
+        wheel.chosen.connect(lambda k, i, p: chosen_data.append((k, i, p)))
+        m_click = QMouseEvent(QEvent.MouseButtonPress, QPointF(220, 80), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        app.sendEvent(wheel, m_click)
+        app.processEvents()
+        self.assertFalse(wheel.isVisible())
+        self.assertEqual(len(chosen_data), 1)
+
+        # 4. Center click dismisses
+        wheel.present('conv', ['test.png'], 400, 400, interactive=True)
+        m_center = QMouseEvent(QEvent.MouseButtonPress, QPointF(220, 220), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        app.sendEvent(wheel, m_center)
+        self.assertFalse(wheel.isVisible())
+
+        # 5. Right click dismisses
+        wheel.present('conv', ['test.png'], 400, 400, interactive=True)
+        m_right = QMouseEvent(QEvent.MouseButtonPress, QPointF(220, 80), Qt.RightButton, Qt.RightButton, Qt.NoModifier)
+        app.sendEvent(wheel, m_right)
+        self.assertFalse(wheel.isVisible())
+
+        # 6. Escape key dismisses
+        wheel.present('conv', ['test.png'], 400, 400, interactive=True)
+        k_esc = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+        app.sendEvent(wheel, k_esc)
+        self.assertFalse(wheel.isVisible())
 
 
 if __name__ == "__main__":

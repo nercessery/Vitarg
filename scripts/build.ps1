@@ -129,7 +129,7 @@ if ($p.ExitCode -ne 0) {
 }
 
 Write-Host "=== Generating Manifest & Lightweight Update Package (Vitarg-app.zip) ==="
-& $py -c "from vitarg.updater import generate_manifest; import json, pathlib; m = generate_manifest(pathlib.Path('dist/Vitarg'), '1.0.3.2'); pathlib.Path('dist/manifest.json').write_text(json.dumps(m, indent=2), encoding='utf-8')"
+& $py -c "from vitarg.updater import generate_manifest; from vitarg import __version__; import json, pathlib; m = generate_manifest(pathlib.Path('dist/Vitarg'), __version__); pathlib.Path('dist/manifest.json').write_text(json.dumps(m, indent=2), encoding='utf-8')"
 if (Test-Path "dist\manifest.json") {
     Write-Host "Manifest generated successfully: dist\manifest.json"
 }
