@@ -54,9 +54,21 @@ TOOLS = [
         {"key": "scale", "label": "Scale (%)", "kind": INT, "min": 10, "max": 800, "default": 100},
         {"key": "width", "label": "Width (px, 0 = auto)", "kind": INT, "min": 0, "max": 15360, "default": 0},
         {"key": "height", "label": "Height (px, 0 = auto)", "kind": INT, "min": 0, "max": 8640, "default": 0}]),
+    Tool("target_compress", "TARGET SIZE", ("video",), form=[
+        {"key": "preset", "label": "Target size", "kind": CHOICE,
+         "choices": ["<25 MB (Discord)", "<50 MB (Nitro)", "<10 MB (Email)", "<8 MB (WhatsApp)", "Custom MB"], "default": "<25 MB (Discord)"},
+        {"key": "custom_mb", "label": "Custom size (MB)", "kind": INT, "min": 1, "max": 2000, "default": 25}]),
+    Tool("volume", "VOLUME BOOST", ("audio", "video"), form=[
+        {"key": "volume", "label": "Volume boost %", "kind": INT, "min": 10, "max": 600, "default": 150}]),
+    Tool("eq", "AUDIO EQUALIZER", ("audio", "video"), form=[
+        {"key": "preset", "label": "Equalizer preset", "kind": CHOICE,
+         "choices": ["Bass Boost", "Ultra Bass", "Vocal Boost", "Treble Boost", "Loudness & Clarity", "Flat"], "default": "Bass Boost"}]),
+    Tool("extract_text", "EXTRACT TEXT", ("pdf", "image"), form=[
+        {"key": "target", "label": "Output destination", "kind": CHOICE,
+         "choices": [".txt File", "Copy to Clipboard", "Both"], "default": ".txt File"}]),
     Tool("extract", "EXTRACT", ("archive",)),
-    Tool("merge_pdf", "MERGE PDF", ("pdf",), multi=True),
-    Tool("create_pdf", "CREATE PDF", ("image",), multi=True),
+    Tool("merge_pdf", "MERGE PDF", ("pdf",), multi=True, custom="pdf_organizer"),
+    Tool("create_pdf", "CREATE PDF", ("image",), multi=True, custom="pdf_organizer"),
     Tool("collage", "COLLAGE", ("image",), multi=True, form=[
         {"key": "cols", "label": "Columns", "kind": INT, "min": 1, "max": 8, "default": 2},
         {"key": "spacing", "label": "Spacing (px)", "kind": INT, "min": 0, "max": 100, "default": 16},
@@ -670,6 +682,159 @@ def resize_pdf(src: Path, ws: Workspace, p: dict) -> Path:
         return out
 
 
+def target_compress_video(src: Path, ws: Workspace, params: dict, progress, cancel) -> Path:
+    info = probe(src)
+    dur = float(info.get("duration") or 0)
+    if dur <= 0:
+        raise ConversionError("Cannot determine video duration for target compression.")
+
+    preset = params.get("preset", "<25 MB (Discord)")
+    preset_map = {
+        "<25 MB (Discord)": 24.5,
+        "<50 MB (Nitro)": 49.0,
+        "<10 MB (Email)": 9.5,
+        "<8 MB (WhatsApp)": 7.5,
+    }
+    target_mb = preset_map.get(preset, float(params.get("custom_mb", 25)))
+    target_bits = target_mb * 8 * 1024 * 1024 * 0.95
+
+    has_audio = info.get("audio", False)
+    a_bitrate_k = 128 if has_audio else 0
+    total_audio_bits = a_bitrate_k * 1000 * dur if has_audio else 0
+
+    total_video_bits = target_bits - total_audio_bits
+    if total_video_bits < 20000 * dur:
+        raise ConversionError(f"Target size ({target_mb:g} MB) is too small for a {dur:.0f}s video.")
+
+    v_bitrate_k = max(20, int((total_video_bits / dur) / 1000))
+    out = _out(ws, src, f"Target_{int(target_mb)}MB", "mp4")
+
+    import sys
+    log_prefix = ws.path("_ff2pass")
+    pass1_args = [
+        "-i", str(src), "-c:v", "libx264", "-b:v", f"{v_bitrate_k}k",
+        "-pass", "1", "-passlogfile", str(log_prefix), "-an", "-f", "null",
+        ("NUL" if sys.platform == "win32" else "/dev/null")
+    ]
+    pass2_args = [
+        "-i", str(src), "-c:v", "libx264", "-b:v", f"{v_bitrate_k}k",
+        "-pass", "2", "-passlogfile", str(log_prefix),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-pix_fmt", "yuv420p"
+    ]
+    if has_audio:
+        pass2_args += ["-c:a", "aac", "-b:a", f"{a_bitrate_k}k"]
+    else:
+        pass2_args += ["-an"]
+    pass2_args += ["-movflags", "+faststart", str(out)]
+
+    run_ffmpeg(pass1_args, dur, lambda f: progress(f * 0.45), cancel)
+    run_ffmpeg(pass2_args, dur, lambda f: progress(0.45 + f * 0.55), cancel)
+
+    for p in ws.work.glob("_ff2pass*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    return out
+
+
+def volume_boost(src: Path, ws: Workspace, params: dict, progress, cancel) -> Path:
+    info = probe(src)
+    if not info.get("audio"):
+        raise ConversionError("The source has no audio stream to amplify.")
+
+    vol_pct = int(params.get("volume", 150))
+    vol_pct = max(10, min(600, vol_pct))
+    factor = vol_pct / 100.0
+
+    sf = fmt_of(src)
+    fam = family(sf)
+    out = _out(ws, src, f"Vol_{vol_pct}pct")
+    vol_filter = f"volume={factor:.2f}"
+
+    if fam == "video":
+        args = ["-i", str(src), "-c:v", "copy", "-filter:a", vol_filter, "-c:a", "aac", "-b:a", "192k", str(out)]
+    else:
+        if sf == "mp3":
+            args = ["-i", str(src), "-filter:a", vol_filter, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
+        elif sf in engine.AUDIO_CODEC:
+            codec = [a.replace("{abr}", "192") for a in engine.AUDIO_CODEC[sf]]
+            args = ["-i", str(src), "-filter:a", vol_filter, *codec, str(out)]
+        else:
+            args = ["-i", str(src), "-filter:a", vol_filter, str(out)]
+    run_ffmpeg(args, info.get("duration", 0), progress, cancel)
+    return out
+
+
+def audio_equalizer(src: Path, ws: Workspace, params: dict, progress, cancel) -> Path:
+    info = probe(src)
+    if not info.get("audio"):
+        raise ConversionError("The source has no audio stream for equalizer.")
+
+    preset = params.get("preset", "Bass Boost")
+    preset_filters = {
+        "Bass Boost": "bass=g=8:f=100",
+        "Ultra Bass": "bass=g=14:f=80,volume=1.2",
+        "Vocal Boost": "equalizer=f=1000:t=q:w=1:g=5,equalizer=f=3000:t=q:w=1:g=4",
+        "Treble Boost": "treble=g=8:f=4000",
+        "Loudness & Clarity": "loudnorm=I=-16:TP=-1.5:LRA=11",
+        "Flat": "anull"
+    }
+    af = preset_filters.get(preset, "bass=g=8:f=100")
+    sf = fmt_of(src)
+    fam = family(sf)
+    slug = preset.split()[0]
+    out = _out(ws, src, f"EQ_{slug}")
+
+    if fam == "video":
+        args = ["-i", str(src), "-c:v", "copy", "-filter:a", af, "-c:a", "aac", "-b:a", "192k", str(out)]
+    else:
+        if sf == "mp3":
+            args = ["-i", str(src), "-filter:a", af, "-c:a", "libmp3lame", "-q:a", "2", str(out)]
+        elif sf in engine.AUDIO_CODEC:
+            codec = [a.replace("{abr}", "192") for a in engine.AUDIO_CODEC[sf]]
+            args = ["-i", str(src), "-filter:a", af, *codec, str(out)]
+        else:
+            args = ["-i", str(src), "-filter:a", af, str(out)]
+    run_ffmpeg(args, info.get("duration", 0), progress, cancel)
+    return out
+
+
+def extract_text_tool(src: Path, ws: Workspace, params: dict) -> Path:
+    sf = fmt_of(src)
+    text = ""
+    if sf == "pdf":
+        text = engine.pdf_to_text(src)
+    elif sf in engine.IMAGE_IN:
+        try:
+            import pytesseract
+            from PIL import Image
+            with Image.open(src) as im:
+                text = pytesseract.image_to_string(im)
+        except Exception:
+            from .inspector import get_file_info
+            info = get_file_info(src)
+            text = f"File: {info['name']}\nDimensions: {info['dimensions']}\nFormat: {info['format']}\nSHA256: {info['sha256']}\n"
+
+    if not text or not text.strip():
+        raise ConversionError("No text could be extracted from this file.")
+
+    target = params.get("target", ".txt File")
+    if target in ("Copy to Clipboard", "Both"):
+        try:
+            from PySide6.QtGui import QGuiApplication
+            clip = QGuiApplication.clipboard()
+            if clip:
+                clip.setText(text)
+        except Exception:
+            pass
+
+    out = _out(ws, src, "Extracted", "txt")
+    out.write_text(text, encoding="utf-8")
+    return out
+
+
 # ------------------------------------------------------------------ dispatcher
 def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
              cancel: Optional[threading.Event] = None):
@@ -741,6 +906,14 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
                         resize_pdf(s, ws, params)
                     else:
                         raise ConversionError(f"Resize does not support .{fmt_of(s)} files.")
+                elif tool_id == "target_compress":
+                    target_compress_video(s, ws, params, sub, cancel)
+                elif tool_id == "volume":
+                    volume_boost(s, ws, params, sub, cancel)
+                elif tool_id == "eq":
+                    audio_equalizer(s, ws, params, sub, cancel)
+                elif tool_id == "extract_text":
+                    extract_text_tool(s, ws, params)
                 else:
                     raise ConversionError(f"Unknown tool {tool_id}")
                 outs += ws.publish()
@@ -758,7 +931,7 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
 
 
 # ------------------------------------------------------------------ live previews (used by the option dialogs)
-PREVIEW_TOOLS = ("edit", "addbg", "compress", "collage", "trim", "speed", "snapshot", "resize")
+PREVIEW_TOOLS = ("edit", "addbg", "compress", "collage", "trim", "speed", "snapshot", "resize", "target_compress", "volume", "eq")
 _THUMBS: OrderedDict = OrderedDict()
 _MAX_THUMBS = 64
 
@@ -934,4 +1107,22 @@ def make_preview(tool_id: str, paths, p: dict):
         d = ImageDraw.Draw(canvas)
         d.text((6, 5), f"START {s0:.2f}s", fill="white"); d.text((a.width + 18, 5), f"END {e0:.2f}s", fill="white")
         return canvas, txt
+    if tool_id == "target_compress":
+        preset = p.get("preset", "<25 MB (Discord)")
+        return media_frame(src, dur * 0.25 if dur else 0.5), f"Target: {preset} · Duration: {dur:.1f}s (Optimized H.264)"
+    if tool_id == "volume":
+        vol = int(p.get("volume", 150))
+        factor = vol / 100.0
+        txt = f"Volume: {vol}% ({factor:.2f}x boost)"
+        if fam == "video":
+            return media_frame(src, dur * 0.25 if dur else 0.5), txt + " · Video stream copied lossless"
+        else:
+            return waveform_image(src), txt
+    if tool_id == "eq":
+        preset = p.get("preset", "Bass Boost")
+        txt = f"Equalizer preset: {preset}"
+        if fam == "video":
+            return media_frame(src, dur * 0.25 if dur else 0.5), txt
+        else:
+            return waveform_image(src), txt
     return None, ""

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from . import engine, tools, theme, __version__
-from .dialogs import CropDialog, FormDialog, ActionConfirmDialog
+from .dialogs import CropDialog, FormDialog, ActionConfirmDialog, ClipboardConvertDialog, PdfOrganizerDialog
 from .inspector import InspectorDialog
 from .jobs import JobWindow
 from .monitor import DragMonitor
@@ -98,6 +98,7 @@ class DropTargetWidget(QWidget):
             e.accept()
         elif e.button() == Qt.RightButton:
             menu = QMenu(self)
+            menu.addAction("📋 Convert Clipboard Image…", self.ctl.convert_clipboard_action)
             menu.addAction("Select Files…", self.ctl.select_files_dialog)
             menu.addAction("Settings…", self.ctl.open_settings)
             menu.addAction("Hide Drop Target", self.hide)
@@ -140,6 +141,9 @@ class Controller:
         self.act_select = QAction("Select Files to Convert…", menu)
         self.act_select.triggered.connect(self.select_files_dialog)
 
+        self.act_clip = QAction("📋 Convert Clipboard Image…", menu)
+        self.act_clip.triggered.connect(self.convert_clipboard_action)
+
         self.act_drop = QAction("Floating Drop Target", menu, checkable=True)
         self.act_drop.setChecked(False)
         self.act_drop.toggled.connect(self._toggle_drop_target)
@@ -150,7 +154,7 @@ class Controller:
         st = QAction("Settings…", menu); st.triggered.connect(self.open_settings)
         upd = QAction("Check for Updates…", menu); upd.triggered.connect(lambda: self.check_for_updates(True))
         quit_ = QAction("Quit Vitarg", menu); quit_.triggered.connect(self.quit)
-        for a in (self.info, self.act_enabled, self.act_select, self.act_drop, self.act_undo, st, upd):
+        for a in (self.info, self.act_enabled, self.act_select, self.act_clip, self.act_drop, self.act_undo, st, upd):
             menu.addAction(a)
         menu.addSeparator(); menu.addAction(quit_)
         self.menu = menu
@@ -285,6 +289,30 @@ class Controller:
         else:
             QMessageBox.warning(None, "Vitarg Undo", f"Undo failed: {msg}")
 
+    def convert_clipboard_action(self):
+        qimg = QGuiApplication.clipboard().image()
+        if qimg.isNull():
+            QMessageBox.information(
+                None, "Vitarg Clipboard",
+                "No image found in clipboard.\n\n"
+                "Copy an image or take a screenshot first\n"
+                "(e.g. Win+Shift+S or PrtScn) and try again."
+            )
+            return
+        dlg = ClipboardConvertDialog(qimg, self.s)
+        dlg.show(); dlg.raise_(); dlg.activateWindow()
+        if dlg.exec() and dlg.saved_path:
+            import subprocess
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(f'explorer /select,"{dlg.saved_path}"')
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(Path(dlg.saved_path).parent)])
+                else:
+                    subprocess.Popen(["xdg-open", str(Path(dlg.saved_path).parent)])
+            except Exception:
+                pass
+
     # -------------------------------------------------------------
     def on_choice(self, kind: str, ident: str, paths: list):
         paths = [str(Path(p)) for p in paths]
@@ -294,15 +322,27 @@ class Controller:
             src_fmt = "/".join(sorted({engine.fmt_of(p).upper() for p in paths}))
             title = f"Converting {src_fmt} → {ident.upper()}"
 
-            if getattr(self.s, "prompt_rename", True):
-                dlg = ActionConfirmDialog(f"{src_fmt} → {ident.upper()}", paths, ident, is_conv=True)
+            if ident == "pdf" and len(paths) > 1:
+                dlg = PdfOrganizerDialog(paths)
                 dlg.show(); dlg.raise_(); dlg.activateWindow()
                 if not dlg.exec():
                     return
+                paths = dlg.ordered_paths()
                 custom_name = dlg.output_name()
+                is_all_pdf = all(engine.fmt_of(p) == "pdf" for p in paths)
+                tool_to_run = "merge_pdf" if is_all_pdf else "create_pdf"
+                fn = lambda prog, cancel: tools.run_tool(tool_to_run, paths, {"custom_name": custom_name}, self.s, prog, cancel)
+                target_or_tool = "pdf"
+            else:
+                if getattr(self.s, "prompt_rename", True):
+                    dlg = ActionConfirmDialog(f"{src_fmt} → {ident.upper()}", paths, ident, is_conv=True)
+                    dlg.show(); dlg.raise_(); dlg.activateWindow()
+                    if not dlg.exec():
+                        return
+                    custom_name = dlg.output_name()
 
-            fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel, custom_name=custom_name)
-            target_or_tool = ident
+                fn = lambda prog, cancel: engine.convert_batch(paths, ident, self.s, prog, cancel, custom_name=custom_name)
+                target_or_tool = ident
         else:
             tool = tools.BY_ID[ident]
             if tool.custom == "inspect":
@@ -317,6 +357,14 @@ class Controller:
                 if not dlg.exec():
                     return
                 params["box"] = dlg.box()
+            elif tool.custom == "pdf_organizer":
+                dlg = PdfOrganizerDialog(paths)
+                dlg.show(); dlg.raise_(); dlg.activateWindow()
+                if not dlg.exec():
+                    return
+                paths = dlg.ordered_paths()
+                custom_name = dlg.output_name()
+                params["custom_name"] = custom_name
             elif tool.form:
                 dlg = FormDialog(tool, self.s, preview_paths=paths)
                 dlg.show(); dlg.raise_(); dlg.activateWindow()

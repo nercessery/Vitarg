@@ -447,5 +447,75 @@ class LinuxPlatformTests(unittest.TestCase):
             self.assertIn('if sys.platform != "win32":', code)
 
 
+class V103FeatureTests(unittest.TestCase):
+    def test_expanded_audio_codecs(self):
+        from vitarg import engine
+        for fmt in ("opus", "wma", "aiff", "ac3", "alac", "amr"):
+            self.assertIn(fmt, engine.AUDIO_IN)
+        for fmt in ("opus", "wma", "aiff", "ac3", "alac"):
+            self.assertIn(fmt, engine.AUDIO_OUT)
+            self.assertIn(fmt, engine.AUDIO_CODEC)
+
+    def test_v103_new_tools_registration(self):
+        from vitarg import tools
+        for tid in ("target_compress", "volume", "eq", "extract_text"):
+            self.assertIn(tid, tools.BY_ID)
+
+        # Check volume tool options
+        vol_tool = tools.BY_ID["volume"]
+        vol_field = next(f for f in vol_tool.form if f["key"] == "volume")
+        self.assertEqual(vol_field["max"], 600)
+        self.assertEqual(vol_field["min"], 10)
+
+        # Check target size tool options
+        tc_tool = tools.BY_ID["target_compress"]
+        preset_field = next(f for f in tc_tool.form if f["key"] == "preset")
+        self.assertIn("<25 MB (Discord)", preset_field["choices"])
+        self.assertIn("<50 MB (Nitro)", preset_field["choices"])
+
+        # Check PDF tools have custom organizer
+        self.assertEqual(tools.BY_ID["merge_pdf"].custom, "pdf_organizer")
+        self.assertEqual(tools.BY_ID["create_pdf"].custom, "pdf_organizer")
+
+    def test_context_menu_settings_default(self):
+        from vitarg import settings as S
+        st = S.Settings()
+        self.assertFalse(st.context_menu)
+
+    def test_context_menu_registration_linux(self):
+        import os, tempfile, shutil
+        from unittest.mock import patch
+        from vitarg import settings as S
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            with patch("sys.platform", "linux"), patch("pathlib.Path.home", return_value=tmp):
+                # Enable
+                ok = S.set_context_menu(True)
+                self.assertTrue(ok)
+                script_path = tmp / ".local" / "share" / "nautilus" / "scripts" / "Convert with Vitarg"
+                kde_path = tmp / ".local" / "share" / "kio" / "servicemenus" / "vitarg.desktop"
+                self.assertTrue(script_path.exists())
+                self.assertTrue(kde_path.exists())
+                self.assertIn("Convert with Vitarg", kde_path.read_text(encoding="utf-8"))
+
+                # Disable
+                ok_off = S.set_context_menu(False)
+                self.assertTrue(ok_off)
+                self.assertFalse(script_path.exists())
+                self.assertFalse(kde_path.exists())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_size_diff_formatting(self):
+        from vitarg.estimator import format_size
+        s1 = 25 * 1024 * 1024
+        s2 = 4 * 1024 * 1024
+        diff = s2 - s1
+        pct = abs(diff) / s1 * 100.0
+        self.assertAlmostEqual(pct, 84.0, places=0)
+        self.assertEqual(format_size(s1), "25.0 MB")
+        self.assertEqual(format_size(s2), "4.0 MB")
+
+
 if __name__ == "__main__":
     unittest.main()

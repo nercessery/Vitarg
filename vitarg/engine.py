@@ -49,8 +49,8 @@ ALIASES = {"jpeg": "jpg", "jpe": "jpg", "tif": "tiff", "htm": "html", "markdown"
 
 IMAGE_IN = ["png", "jpg", "webp", "bmp", "tiff", "gif", "ico", "heic", "svg"]
 IMAGE_OUT = ["jpg", "png", "webp", "bmp", "tiff", "gif", "ico", "pdf", "docx"]
-AUDIO_IN = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "aiff"]
-AUDIO_OUT = ["mp3", "wav", "flac", "aac", "ogg", "m4a"]
+AUDIO_IN = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "aiff", "ac3", "alac", "amr"]
+AUDIO_OUT = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "aiff", "ac3", "alac"]
 VIDEO_IN = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv"]
 VIDEO_OUT = ["mp4", "mov", "mkv", "webm", "avi", "gif"]
 ARCHIVES = ["zip", "tar", "gz", "7z"]
@@ -286,6 +286,12 @@ AUDIO_CODEC = {
     "aac": ["-c:a", "aac", "-b:a", "{abr}k", "-f", "adts"],
     "ogg": ["-c:a", "libvorbis", "-q:a", "5"],
     "m4a": ["-c:a", "aac", "-b:a", "{abr}k", "-movflags", "+faststart"],
+    "opus": ["-c:a", "libopus", "-b:a", "{abr}k"],
+    "wma": ["-c:a", "wmav2", "-b:a", "{abr}k"],
+    "aiff": ["-c:a", "pcm_s16be"],
+    "ac3": ["-c:a", "ac3", "-b:a", "{abr}k"],
+    "alac": ["-c:a", "alac"],
+    "amr": ["-c:a", "libopencore_amrnb", "-ar", "8000", "-ab", "12.2k"],
 }
 EVEN = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
@@ -320,7 +326,21 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel)
     else:
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
-        args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *_video_args(target, settings.video_crf), str(out)]
+        if not info["audio"]:
+            raw_v = _video_args(target, settings.video_crf)
+            clean_v = []
+            skip_next = False
+            for a in raw_v:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ("-c:a", "-b:a"):
+                    skip_next = True
+                    continue
+                clean_v.append(a)
+            args = ["-i", str(src), "-map", "0:v:0", "-an", *clean_v, str(out)]
+        else:
+            args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *_video_args(target, settings.video_crf), str(out)]
     run_ffmpeg(args, info["duration"], progress, cancel)
     chk = probe(out)
     if target in AUDIO_OUT and not chk["audio"]:

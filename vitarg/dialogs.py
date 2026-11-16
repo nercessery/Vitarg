@@ -1,8 +1,9 @@
 """Tool option dialogs: generic form dialog and the crop editor (matches the reference screenshot)."""
-from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal, QSize
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QBrush, QCursor, QIntValidator
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QComboBox, QSpinBox,
-                               QDoubleSpinBox, QLineEdit, QColorDialog, QButtonGroup, QGridLayout, QSlider)
+                               QDoubleSpinBox, QLineEdit, QColorDialog, QButtonGroup, QGridLayout, QSlider,
+                               QListWidget, QListWidgetItem, QAbstractItemView, QFileDialog, QMessageBox)
 
 from . import cropmath as cm, engine
 from . import theme
@@ -111,6 +112,23 @@ class FormDialog(Panel):
             self.widgets["mode"].currentTextChanged.connect(_on_mode_change)
             _on_mode_change(self.widgets["mode"].currentText())
 
+        if tool.id == "target_compress" and "preset" in self.widgets:
+            def _on_target_change(p):
+                is_custom = (p == "Custom MB")
+                if "custom_mb" in self.widgets:
+                    self.widgets["custom_mb"].setEnabled(is_custom)
+            self.widgets["preset"].currentTextChanged.connect(_on_target_change)
+            _on_target_change(self.widgets["preset"].currentText())
+
+        if has_prev and tool.id in ("volume", "eq"):
+            self.play_btn = QPushButton("🔊 Listen Preview Sample (2s)")
+            self.play_btn.setStyleSheet(
+                "background: rgba(124, 58, 237, 0.25); border: 1px solid rgba(124, 58, 237, 0.5); "
+                "color: #E0E7FF; font-weight: bold; padding: 6px 12px; border-radius: 6px; margin: 4px 0;"
+            )
+            self.play_btn.clicked.connect(self._play_audio_sample)
+            self.body.addWidget(self.play_btn)
+
         # Output Name section
         self.rename_edit = None
         if self.paths:
@@ -192,6 +210,54 @@ class FormDialog(Panel):
         if getattr(self, "rename_edit", None) and self.rename_edit.text().strip():
             out["custom_name"] = self.rename_edit.text().strip()
         return out
+
+    def _play_audio_sample(self):
+        if not self.paths:
+            return
+        import threading, tempfile, subprocess, os, shutil, sys
+        src = self.paths[0]
+        vals = self.values()
+        tool_id = self.tool.id
+        def _bg():
+            fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            try:
+                af = ""
+                if tool_id == "volume":
+                    vol = int(vals.get("volume", 150)) / 100.0
+                    af = f"volume={vol:.2f}"
+                elif tool_id == "eq":
+                    pr = vals.get("preset", "Bass Boost")
+                    m = {
+                        "Bass Boost": "bass=g=8:f=100",
+                        "Ultra Bass": "bass=g=14:f=80,volume=1.2",
+                        "Vocal Boost": "equalizer=f=1000:t=q:w=1:g=5",
+                        "Treble Boost": "treble=g=8:f=4000",
+                        "Loudness & Clarity": "loudnorm=I=-16:TP=-1.5:LRA=11",
+                        "Flat": "anull"
+                    }
+                    af = m.get(pr, "bass=g=8:f=100")
+                cmd = [engine.need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", "0", "-t", "2", "-i", str(src)]
+                if af:
+                    cmd += ["-filter:a", af]
+                cmd += ["-c:a", "pcm_s16le", tmp_wav]
+                subprocess.run(cmd, capture_output=True, creationflags=engine.NOWIN)
+                if os.path.exists(tmp_wav) and os.path.getsize(tmp_wav) > 0:
+                    if sys.platform == "win32":
+                        import winsound
+                        winsound.PlaySound(tmp_wav, winsound.SND_FILENAME)
+                    else:
+                        for player in ("paplay", "aplay", "pw-play", "ffplay"):
+                            p = shutil.which(player)
+                            if p:
+                                subprocess.run([p, tmp_wav], capture_output=True)
+                                break
+            finally:
+                try:
+                    os.unlink(tmp_wav)
+                except OSError:
+                    pass
+        threading.Thread(target=_bg, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------- crop
@@ -453,3 +519,252 @@ class ActionConfirmDialog(Panel):
 
     def output_name(self) -> str:
         return self.name_edit.text().strip()
+
+
+# ---------------------------------------------------------------------------- visual PDF organizer & merger
+class PdfOrganizerDialog(Panel):
+    """Visual drag-and-drop PDF organizer and merger: reorder pages/files before creating PDF."""
+    def __init__(self, paths: list[str], parent=None):
+        super().__init__("Vitarg: PDF Page & File Organizer", 520, parent)
+        from pathlib import Path
+        self.paths = [Path(p) for p in paths]
+
+        info_lbl = QLabel(f"📄 <b>{len(self.paths)} files selected.</b> Drag items to reorder pages/files:")
+        info_lbl.setWordWrap(True)
+        self.body.addWidget(info_lbl)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setIconSize(QSize(42, 42))
+        self.list_widget.setStyleSheet(
+            "QListWidget { background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.15); "
+            "border-radius: 8px; padding: 6px; color: #FFFFFF; font-size: 12px; } "
+            "QListWidget::item { padding: 6px; border-radius: 6px; margin: 2px 0; } "
+            "QListWidget::item:selected { background: rgba(124, 58, 237, 0.45); border: 1px solid #7C3AED; } "
+            "QListWidget::item:hover { background: rgba(255, 255, 255, 0.08); }"
+        )
+        self.list_widget.setMinimumHeight(240)
+        self.body.addWidget(self.list_widget)
+
+        self._populate_list(self.paths)
+
+        # Control Row (Up, Down, Remove, Add More)
+        btn_bar = QHBoxLayout()
+        btn_bar.setSpacing(6)
+        up_btn = QPushButton("▲ Move Up")
+        up_btn.clicked.connect(self._move_up)
+        dn_btn = QPushButton("▼ Move Down")
+        dn_btn.clicked.connect(self._move_down)
+        rm_btn = QPushButton("✖ Remove")
+        rm_btn.clicked.connect(self._remove_selected)
+        add_btn = QPushButton("➕ Add Files…")
+        add_btn.clicked.connect(self._add_files)
+        for b in (up_btn, dn_btn, rm_btn, add_btn):
+            b.setStyleSheet("background: rgba(255, 255, 255, 0.08); font-size: 11px; padding: 4px 10px; border-radius: 4px;")
+            btn_bar.addWidget(b)
+        btn_bar.addStretch(1)
+        self.body.addLayout(btn_bar)
+
+        # Output Name section
+        ren_box = QWidget()
+        rb_lay = QVBoxLayout(ren_box)
+        rb_lay.setContentsMargins(0, 8, 0, 4)
+        rb_lay.setSpacing(4)
+        rb_lbl = QLabel("🏷️ Output PDF Name:")
+        rb_lbl.setStyleSheet("color: #7C3AED; font-weight: bold; font-size: 11px;")
+        rb_lay.addWidget(rb_lbl)
+
+        def_name = "Merged.pdf" if any(p.suffix.lower() == ".pdf" for p in self.paths) else "Images.pdf"
+        self.name_edit = QLineEdit(Path(def_name).stem)
+        self.name_edit.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.35); border: 1.5px solid #7C3AED; "
+            "border-radius: 6px; padding: 6px 10px; color: #FFFFFF; font-size: 13px;"
+        )
+        self.name_edit.returnPressed.connect(self.accept)
+        rb_lay.addWidget(self.name_edit)
+        self.body.addWidget(ren_box)
+
+        # Action Buttons
+        row = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Create PDF ⚡")
+        ok.setObjectName("primary")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addStretch(1)
+        row.addWidget(ok)
+        self.body.addLayout(row)
+
+    def _populate_list(self, paths):
+        from pathlib import Path
+        from .estimator import format_size
+        from .tools import thumb
+        for p in paths:
+            p = Path(p)
+            sz = ""
+            try:
+                sz = f" ({format_size(p.stat().st_size)})"
+            except Exception:
+                pass
+            item = QListWidgetItem(f"📄 {p.name}{sz}")
+            item.setData(Qt.UserRole, str(p))
+            sf = engine.fmt_of(p)
+            if sf in engine.IMAGE_IN:
+                try:
+                    im = thumb(p, (64, 64))
+                    item.setIcon(QPixmap.fromImage(pil_image_to_qimage(im)))
+                except Exception:
+                    pass
+            elif sf == "pdf":
+                try:
+                    fz = engine._fitz()
+                    with fz.open(str(p)) as doc:
+                        if len(doc) > 0:
+                            pix = doc[0].get_pixmap(dpi=50, alpha=False)
+                            qim = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+                            item.setIcon(QPixmap.fromImage(qim))
+                except Exception:
+                    pass
+            self.list_widget.addItem(item)
+
+    def _move_up(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row - 1, item)
+            self.list_widget.setCurrentRow(row - 1)
+
+    def _move_down(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row + 1, item)
+            self.list_widget.setCurrentRow(row + 1)
+
+    def _remove_selected(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+
+    def _add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Files to Add to PDF")
+        if files:
+            from pathlib import Path
+            self._populate_list([Path(f) for f in files])
+
+    def ordered_paths(self) -> list[str]:
+        res = []
+        for i in range(self.list_widget.count()):
+            res.append(self.list_widget.item(i).data(Qt.UserRole))
+        return res
+
+    def output_name(self) -> str:
+        t = self.name_edit.text().strip()
+        if t.lower().endswith(".pdf"):
+            t = t[:-4]
+        return t
+
+
+# ---------------------------------------------------------------------------- clipboard quick convert dialog
+class ClipboardConvertDialog(Panel):
+    """Popup dialog when taking screenshot / copying image to clipboard: change filename, format, and save."""
+    def __init__(self, qimg: QImage, settings, parent=None):
+        super().__init__("Vitarg: Convert Clipboard Image", 460, parent)
+        from pathlib import Path
+        import time
+        self.qimg = qimg
+        self.s = settings
+
+        self.prev_lbl = QLabel()
+        self.prev_lbl.setAlignment(Qt.AlignCenter)
+        self.prev_lbl.setFixedHeight(180)
+        pm = QPixmap.fromImage(qimg.scaled(380, 170, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.prev_lbl.setPixmap(pm)
+        self.body.addWidget(self.prev_lbl)
+
+        grid = QGridLayout()
+        grid.setVerticalSpacing(8)
+
+        grid.addWidget(QLabel("File Name:"), 0, 0)
+        def_name = f"Screenshot_{time.strftime('%Y%m%d_%H%M%S')}"
+        self.name_edit = QLineEdit(def_name)
+        self.name_edit.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.35); border: 1.5px solid #7C3AED; "
+            "border-radius: 6px; padding: 5px 8px; color: #FFFFFF;"
+        )
+        self.name_edit.selectAll()
+        grid.addWidget(self.name_edit, 0, 1)
+
+        grid.addWidget(QLabel("Format:"), 1, 0)
+        self.fmt_combo = QComboBox()
+        self.fmt_combo.addItems(["PNG", "JPG", "WebP", "PDF", "BMP"])
+        self.fmt_combo.setCurrentText("PNG")
+        grid.addWidget(self.fmt_combo, 1, 1)
+
+        grid.addWidget(QLabel("Folder:"), 2, 0)
+        f_row = QHBoxLayout()
+        out_def = settings.output_folder or str(Path.home() / "Desktop")
+        self.dir_edit = QLineEdit(out_def)
+        br_btn = QPushButton("Browse…")
+        br_btn.clicked.connect(self._browse)
+        f_row.addWidget(self.dir_edit, 1)
+        f_row.addWidget(br_btn)
+        grid.addLayout(f_row, 2, 1)
+
+        self.body.addLayout(grid)
+
+        row = QHBoxLayout()
+        cancel = QPushButton("Cancel (Esc)")
+        cancel.clicked.connect(self.reject)
+        save_btn = QPushButton("Save Image ⚡")
+        save_btn.setObjectName("primary")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._do_save)
+        row.addWidget(cancel)
+        row.addStretch(1)
+        row.addWidget(save_btn)
+        self.body.addLayout(row)
+        self.saved_path = None
+
+    def _browse(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Output Folder", self.dir_edit.text())
+        if d:
+            self.dir_edit.setText(d)
+
+    def _do_save(self):
+        from pathlib import Path
+        name = self.name_edit.text().strip() or "Screenshot"
+        fmt = self.fmt_combo.currentText().lower()
+        out_dir = Path(self.dir_edit.text().strip() or (Path.home() / "Desktop"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = engine.unique_name(out_dir, f"{name}.{fmt}", overwrite=(self.s.overwrite == "overwrite"))
+
+        try:
+            from PIL import Image
+            buffer = self.qimg.bits().tobytes()
+            pil_im = Image.frombuffer("RGBA", (self.qimg.width(), self.qimg.height()), buffer, "raw", "BGRA", 0, 1)
+
+            if fmt == "png":
+                pil_im.save(out_path, "PNG", optimize=True)
+            elif fmt in ("jpg", "jpeg"):
+                engine._flatten(pil_im).save(out_path, "JPEG", quality=self.s.jpg_quality)
+            elif fmt == "webp":
+                pil_im.save(out_path, "WEBP", quality=self.s.webp_quality)
+            elif fmt == "pdf":
+                engine._flatten(pil_im).save(out_path, "PDF", resolution=150.0)
+            elif fmt == "bmp":
+                engine._flatten(pil_im).save(out_path, "BMP")
+            else:
+                pil_im.save(out_path)
+
+            self.saved_path = str(out_path)
+            from .undo import undo_manager, notify_explorer
+            undo_manager.record("Clipboard Image", [self.saved_path])
+            notify_explorer([self.saved_path])
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Failed", f"Could not save clipboard image:\n{e}")

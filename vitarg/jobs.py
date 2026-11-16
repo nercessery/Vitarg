@@ -173,6 +173,40 @@ class JobWindow(Panel):
         self.sub.setText(f"✅ Success! Generated: {', '.join(out_names)}")
         self.sub.setStyleSheet("color: #34D399; font-weight: bold;")
 
+        # Size Comparison & Visual Stats Card
+        try:
+            in_sz = sum(Path(s).stat().st_size for s in self.sources if Path(s).exists())
+            out_sz = sum(Path(o).stat().st_size for o in outs if Path(o).exists())
+            if in_sz > 0 and out_sz > 0:
+                diff = out_sz - in_sz
+                pct = (abs(diff) / in_sz) * 100.0
+                in_str, out_str = format_size(in_sz), format_size(out_sz)
+                if diff < 0:
+                    saved_str = format_size(abs(diff))
+                    card_txt = f"📉 <b>{in_str}</b> ➔ <b>{out_str}</b> &nbsp;({pct:.1f}% smaller, saved {saved_str})"
+                    card_style = (
+                        "background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); "
+                        "border-radius: 6px; padding: 6px 10px; color: #6EE7B7; font-size: 11px;"
+                    )
+                elif diff > 0:
+                    card_txt = f"📈 <b>{in_str}</b> ➔ <b>{out_str}</b> &nbsp;(+{pct:.1f}%)"
+                    card_style = (
+                        "background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.4); "
+                        "border-radius: 6px; padding: 6px 10px; color: #93C5FD; font-size: 11px;"
+                    )
+                else:
+                    card_txt = f"📊 <b>{in_str}</b> ➔ <b>{out_str}</b> &nbsp;(same size)"
+                    card_style = (
+                        "background: rgba(107, 114, 128, 0.15); border: 1px solid rgba(107, 114, 128, 0.4); "
+                        "border-radius: 6px; padding: 6px 10px; color: #D1D5DB; font-size: 11px;"
+                    )
+                stats_lbl = QLabel(card_txt)
+                stats_lbl.setStyleSheet(card_style)
+                stats_lbl.setAlignment(Qt.AlignCenter)
+                self.body.addWidget(stats_lbl)
+        except Exception:
+            pass
+
         # Action Buttons Row (Undo / Rollback, Open Folder, Close)
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)

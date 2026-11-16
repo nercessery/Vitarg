@@ -126,6 +126,7 @@ class SettingsDialog(Panel):
         self.prompt_rename = QCheckBox("Prompt to edit file name before converting"); self.prompt_rename.setChecked(settings.prompt_rename)
         self.sound = QCheckBox("Play a sound when a wheel option is highlighted"); self.sound.setChecked(settings.sound)
         self.login = QCheckBox("Start Vitarg when I sign in to Windows"); self.login.setChecked(settings.launch_at_login)
+        self.context_menu = QCheckBox("Add 'Convert with Vitarg' to context menu (right-click in file manager)"); self.context_menu.setChecked(settings.context_menu)
         self.auto_upd = QCheckBox("Automatically check for updates from GitHub"); self.auto_upd.setChecked(settings.auto_update)
         self.opacity = QSlider(Qt.Horizontal); self.opacity.setRange(30, 100); self.opacity.setValue(settings.opacity)
         self.btn_shortcut = QPushButton("Create Desktop Shortcut")
@@ -137,7 +138,7 @@ class SettingsDialog(Panel):
         self.btn_undo = QPushButton("↩ Undo Last Operation")
         self.btn_undo.setStyleSheet("background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); color: #FCA5A5; font-weight: bold;")
         self.btn_undo.clicked.connect(self._do_undo)
-        for w in (self.enabled, self.prompt_rename, self.sound, self.login, self.auto_upd, self.btn_shortcut, self.btn_undo, self.btn_update, self.lbl_update_status,
+        for w in (self.enabled, self.prompt_rename, self.sound, self.login, self.context_menu, self.auto_upd, self.btn_shortcut, self.btn_undo, self.btn_update, self.lbl_update_status,
                   QLabel("Glass opacity (left = more see-through, applies instantly)"), self.opacity):
             gl.addWidget(w)
         gl.addStretch(1)
@@ -323,6 +324,7 @@ class SettingsDialog(Panel):
         self.r_src.setChecked(True); self.folder.setText(""); self.over.setCurrentIndex(0)
         self.jq.setValue(d.jpg_quality); self.wq.setValue(d.webp_quality); self.crf.setValue(d.video_crf); self.abr.setValue(d.audio_bitrate_k)
         self.preset.setCurrentText(d.compress_preset); self.enabled.setChecked(True); self.prompt_rename.setChecked(True); self.sound.setChecked(True); self.login.setChecked(False)
+        self.context_menu.setChecked(False)
         self.auto_upd.setChecked(True)
         self.s.reset_appearance(); self._apply_appearance()
 
@@ -340,6 +342,12 @@ class SettingsDialog(Panel):
             try:
                 S.set_launch_at_login(s.launch_at_login)
             except OSError:
+                pass
+        if s.context_menu != self.context_menu.isChecked():
+            s.context_menu = self.context_menu.isChecked()
+            try:
+                S.set_context_menu(s.context_menu)
+            except Exception:
                 pass
         s.save()
         self.on_saved()

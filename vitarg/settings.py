@@ -98,6 +98,7 @@ class Settings:
     enabled: bool = True
     auto_update: bool = True             # automatically check for updates on startup
     prompt_rename: bool = True           # prompt to review/edit file name before running
+    context_menu: bool = False           # Windows Explorer / Linux context menu integration
 
     # ---- persistence -------------------------------------------------
     @staticmethod
@@ -255,6 +256,80 @@ def create_desktop_shortcut() -> bool:
                 pass
             created = True
             return created
+        except Exception:
+            return False
+    return False
+
+
+def set_context_menu(enabled: bool) -> bool:
+    """Register or unregister 'Convert with Vitarg' in the Windows Explorer or Linux file manager context menu."""
+    if sys.platform == "win32":
+        import winreg
+        targets = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Vitarg"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Vitarg"),
+        ]
+        exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
+        ico = str(Path(__file__).resolve().parent.parent / "assets" / "vitarg.ico")
+        icon_arg = sys.executable if getattr(sys, "frozen", False) else (ico if os.path.exists(ico) else sys.executable)
+
+        try:
+            if enabled:
+                for root, key_path in targets:
+                    with winreg.CreateKey(root, key_path) as k:
+                        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "Convert with Vitarg")
+                        winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_arg)
+                    with winreg.CreateKey(root, key_path + r"\command") as k:
+                        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, f'{exe} "%1"')
+                return True
+            else:
+                for root, key_path in targets:
+                    try:
+                        winreg.DeleteKey(root, key_path + r"\command")
+                    except (FileNotFoundError, OSError):
+                        pass
+                    try:
+                        winreg.DeleteKey(root, key_path)
+                    except (FileNotFoundError, OSError):
+                        pass
+                return True
+        except Exception:
+            return False
+    elif sys.platform.startswith("linux"):
+        try:
+            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            nautilus_dir = Path.home() / ".local" / "share" / "nautilus" / "scripts"
+            kde_dir = Path.home() / ".local" / "share" / "kio" / "servicemenus"
+            script_path = nautilus_dir / "Convert with Vitarg"
+            kde_path = kde_dir / "vitarg.desktop"
+            if enabled:
+                nautilus_dir.mkdir(parents=True, exist_ok=True)
+                script_path.write_text(f'#!/bin/bash\n{exe} "$@"\n', encoding="utf-8")
+                try:
+                    script_path.chmod(0o755)
+                except OSError:
+                    pass
+                kde_dir.mkdir(parents=True, exist_ok=True)
+                kde_content = (
+                    "[Desktop Entry]\n"
+                    "Type=Service\n"
+                    "ServiceTypes=KonqPopupMenu/Plugin\n"
+                    "MimeType=all/allfiles;\n"
+                    "Actions=VitargConvert;\n"
+                    "\n"
+                    "[Desktop Action VitargConvert]\n"
+                    "Name=Convert with Vitarg\n"
+                    "Icon=vitarg\n"
+                    f"Exec={exe} %F\n"
+                )
+                kde_path.write_text(kde_content, encoding="utf-8")
+                return True
+            else:
+                if script_path.exists():
+                    script_path.unlink()
+                if kde_path.exists():
+                    kde_path.unlink()
+                return True
         except Exception:
             return False
     return False
