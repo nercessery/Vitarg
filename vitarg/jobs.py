@@ -50,10 +50,25 @@ class Bar(QWidget):
         if self.value < 0:
             self.phase = (self.phase + 0.02) % 1.0
             self.update()
+        else:
+            self.t.stop()
 
     def set_value(self, v):
         self.value = v
+        if v >= 0:
+            if self.t.isActive():
+                self.t.stop()
+        elif not self.t.isActive():
+            self.t.start(30)
         self.update()
+
+    def stop(self):
+        if self.t.isActive():
+            self.t.stop()
+
+    def hideEvent(self, e):
+        self.stop()
+        super().hideEvent(e)
 
     def paintEvent(self, e):
         p = QPainter(self)

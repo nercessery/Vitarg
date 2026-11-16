@@ -173,7 +173,7 @@ class VitargUpdaterSemver(unittest.TestCase):
         import vitarg.cropmath as vc
         import vitarg.keys as vk
         import vitarg.settings as vs
-        self.assertEqual(vitarg.__version__, "1.0.2")
+        self.assertEqual(vitarg.__version__, "1.0.3")
         s = vs.Settings()
         self.assertEqual(s.tint, "#12111A")
         self.assertEqual(s.highlight, "#7C3AED")

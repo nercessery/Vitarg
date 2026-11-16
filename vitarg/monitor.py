@@ -124,8 +124,6 @@ class DragMonitor(QObject):
                     self.released.emit()
                 self._reset()
             return
-        if self.timer.interval() != 16:
-            self.timer.setInterval(16)              # 60 FPS for responsive dragging
         if self.suppressed:
             return
         if not self.armed and self.shown is None:             # rising edge
@@ -137,10 +135,14 @@ class DragMonitor(QObject):
                 self.token += 1
                 curr_token = self.token
             if self.armed:
+                if self.timer.interval() != 16:
+                    self.timer.setInterval(16)          # 60 FPS only during genuine Explorer drag
                 threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
             return
         if not self.armed:
             return
+        if self.timer.interval() != 16:
+            self.timer.setInterval(16)                  # maintain 60 FPS while dragging in Explorer
         if keys.key_down(0x1B):                               # Esc
             self.suppressed = True
             self.cancelled.emit()

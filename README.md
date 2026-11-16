@@ -1,8 +1,9 @@
 # 🔮 Vitarg
 
-A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for Windows. Hold a trigger key while dragging files in Explorer — a sleek obsidian dark glass radial wheel appears — drop on a wedge to convert, resize, or process files instantly.
+A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for Windows and Linux. Hold a trigger key while dragging files in your file manager — a sleek obsidian dark glass radial wheel appears — drop on a wedge to convert, resize, or process files instantly.
 
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![Linux](https://img.shields.io/badge/platform-Linux%20(X11%20%2F%20Wayland)-orange)
 ![Theme](https://img.shields.io/badge/theme-Obsidian%20Glass%20%2B%20Royal%20Purple-7C3AED)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -63,18 +64,26 @@ Vitarg features an **integrated GitHub Releases auto-updater**:
 
 ## 📥 Download & Installation
 
-Visit the [**Releases**](../../releases) page and download **`Vitarg-Setup.exe`**.
+Visit the [**Releases**](../../releases) page:
 
-The official installer:
+### 🪟 Windows
+Download **`Vitarg-Setup.exe`**:
 - Installs to `Program Files\Vitarg`
 - Automatically creates a desktop shortcut with the Vitarg purple icon
 - Adds a Start Menu shortcut
 - Registers a clean Windows uninstaller in Apps & Features
 
+### 🐧 Linux (Ubuntu, Debian, Fedora, Arch)
+Download **`Vitarg-linux-x86_64.tar.gz`**:
+- Unpack and run `./Vitarg`
+- Fully standalone PyInstaller distribution with all dependencies and Qt platform plugins bundled
+- Out-of-the-box support for both **X11** and **Wayland** desktops (GNOME, KDE Plasma, XFCE, Cinnamon)
+
 ---
 
 ## 🚀 Usage
 
+### On Windows:
 1. Launch `Vitarg.exe` — a tray icon appears in the Windows system tray.
 2. Drag any file in Windows Explorer or Desktop:
    - Hold **Shift** while dragging → **Conversion Wheel**
@@ -82,27 +91,45 @@ The official installer:
 3. Drop the file onto your desired action petal.
 4. Output is generated cleanly in seconds without modifying the source file.
 
+### On Linux (X11 & Wayland):
+1. Launch `./Vitarg` — a system tray icon appears (or a floating drop target if system tray is unavailable in your desktop environment).
+2. Multiple invocation methods:
+   - **Floating Drop Target**: Drag files from Nautilus, Dolphin, Thunar, or Nemo onto the on-screen `+` target widget.
+   - **System Tray**: Right-click the tray icon to select "Select Files to Convert…" or toggle the floating drop target.
+   - **CLI / File Manager "Open With"**: Run `vitarg <file1> <file2>` from terminal or link Vitarg as a file handler. Single-instance socket IPC automatically forwards files to the running instance and displays the radial wheel.
+   - **Wayland Center Fallback**: Automatically opens the radial action wheel at the screen center if global mouse coordinate tracking is restricted by your Wayland compositor.
+
 ---
 
 ## 🔧 Building from Source
 
 ### Prerequisites
-- Windows 10/11 (x64)
-- Python 3.10+ (3.12 recommended)
+- **Windows**: Windows 10/11 (x64), Python 3.10+ (3.12 recommended), Inno Setup (optional, for setup installer)
+- **Linux**: Ubuntu 22.04+ / Fedora 38+ / Arch Linux, Python 3.10+, FFmpeg, Pandoc
 
-### Quick Build
+### Windows Build
 ```powershell
 git clone https://github.com/nercessery/Vitarg.git
 cd Vitarg
-build.bat
+.\scripts\build.ps1
 ```
+The automated script will initialize the environment, bundle FFmpeg/Pandoc, execute the 194-test suite, and compile `dist\Vitarg-Setup.exe`.
 
-The automated build script will:
-1. Initialize virtual environment and install dependencies.
-2. Fetch FFmpeg, FFprobe, and Pandoc tools with UPX compression.
-3. Run the complete automated test suite.
-4. Bundle with PyInstaller using optimized module exclusions.
-5. Compile `dist\Vitarg-Setup.exe` using Inno Setup ultra solid LZMA2 compression.
+### Linux Build
+```bash
+git clone https://github.com/nercessery/Vitarg.git
+cd Vitarg
+sudo apt-get update && sudo apt-get install -y ffmpeg pandoc \
+  libgl1 libegl1 libxkbcommon-x11-0 libxcb*
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m unittest discover -s tests -p "test_*.py"
+pyinstaller --noconfirm --clean --windowed --name Vitarg \
+  --add-data "assets:assets" \
+  --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf \
+  run_vitarg.py
+```
 
 ---
 

@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 
 GITHUB_REPOS = ["nercessery/Vitarg"]
-USER_AGENT = "Vitarg-App/1.0.2"
+USER_AGENT = "Vitarg-App/1.0.3"
 
 try:
     from PySide6.QtCore import Qt, QThread, Signal, QTimer
@@ -75,15 +75,20 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                         remote_v = parse_semver(tag)
                         if remote_v > cur_v:
                             assets = data.get("assets", [])
-                            setup_asset = None
+                            target_ext = ".exe" if sys.platform == "win32" else ".tar.gz"
                             for a in assets:
                                 name = a.get("name", "").lower()
-                                if ("setup" in name or "vitarg" in name) and name.endswith(".exe"):
+                                if ("setup" in name or "vitarg" in name or "linux" in name) and name.endswith(target_ext):
                                     setup_asset = a
                                     break
                             if not setup_asset and assets:
                                 for a in assets:
-                                    if a.get("name", "").lower().endswith(".exe"):
+                                    if a.get("name", "").lower().endswith(target_ext):
+                                        setup_asset = a
+                                        break
+                            if not setup_asset and assets and sys.platform != "win32":
+                                for a in assets:
+                                    if a.get("name", "").lower().endswith((".tar.gz", ".zip", ".appimage")):
                                         setup_asset = a
                                         break
                             if setup_asset:
@@ -97,7 +102,7 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                                     "size": setup_asset.get("size", 0),
                                 }, f"New release {tag} available!"
                             else:
-                                return None, f"Release {tag} found, but installer asset (.exe) is still compiling."
+                                return None, f"Release {tag} found, but release asset ({target_ext}) is still compiling."
                         else:
                             return None, f"You are up to date (Latest release: {tag})."
             except urllib.error.HTTPError as e:
@@ -269,10 +274,22 @@ class UpdateDialog(Panel):
             self.status.setText(f"Downloading: {mb_dl:.1f} MB...")
 
     def _on_finished(self, installer_path: str):
-        self.status.setText("Download complete! Launching installer...")
-        self.bar.setValue(100)
-        # Start the installer and close Vitarg so files are replaced cleanly
-        QTimer.singleShot(500, lambda: self._launch_installer_and_exit(installer_path))
+        if sys.platform == "win32":
+            self.status.setText("Download complete! Launching installer...")
+            self.bar.setValue(100)
+            # Start the installer and close Vitarg so files are replaced cleanly
+            QTimer.singleShot(500, lambda: self._launch_installer_and_exit(installer_path))
+        else:
+            self.status.setText(f"Download complete!\nSaved to: {installer_path}")
+            self.bar.setValue(100)
+            self.btn_later.setText("Close")
+            self.btn_update.setText("Open Folder")
+            self.btn_update.setEnabled(True)
+            try:
+                self.btn_update.clicked.disconnect()
+            except Exception:
+                pass
+            self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(Path(installer_path).parent)]))
 
     def _launch_installer_and_exit(self, installer_path: str):
         try:
