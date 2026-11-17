@@ -461,6 +461,7 @@ def main():
 
     first_run = not Settings.path().exists()
     settings = Settings.load()
+    engine.set_cpu_mode(getattr(settings, "cpu_mode", "eco"))
     ctl = Controller(app, settings)
     app.ctl = ctl
 

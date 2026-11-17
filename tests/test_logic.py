@@ -499,8 +499,8 @@ class V103FeatureTests(unittest.TestCase):
         # Check target size tool options
         tc_tool = tools.BY_ID["target_compress"]
         preset_field = next(f for f in tc_tool.form if f["key"] == "preset")
-        self.assertIn("<25 MB (Discord)", preset_field["choices"])
-        self.assertIn("<50 MB (Nitro)", preset_field["choices"])
+        self.assertIn("25 MB", preset_field["choices"])
+        self.assertIn("50 MB", preset_field["choices"])
 
         # Check PDF tools have custom organizer
         self.assertEqual(tools.BY_ID["merge_pdf"].custom, "pdf_organizer")
@@ -619,6 +619,55 @@ class V103FeatureTests(unittest.TestCase):
         k_esc = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
         app.sendEvent(wheel, k_esc)
         self.assertFalse(wheel.isVisible())
+
+    def test_cpu_throttling_modes(self):
+        from vitarg import engine
+        # Default should be eco (max 40-50% CPU)
+        self.assertIn(engine.get_cpu_mode(), ("eco", "full"))
+        engine.set_cpu_mode("full")
+        self.assertEqual(engine.get_cpu_mode(), "full")
+        engine.set_cpu_mode("eco")
+        self.assertEqual(engine.get_cpu_mode(), "eco")
+
+        # Test subprocess throttling call doesn't crash
+        import subprocess
+        p = subprocess.Popen(["cmd.exe", "/c", "echo test"], stdout=subprocess.PIPE)
+        engine.apply_cpu_throttling(p, "eco")
+        engine.apply_cpu_throttling(p, "full")
+        p.stdout.close()
+        p.wait()
+
+    def test_target_compress_clean_labels(self):
+        from vitarg import tools
+        tc = tools.BY_ID["target_compress"]
+        choices = tc.form[0]["choices"]
+        self.assertIn("25 MB", choices)
+        self.assertIn("50 MB", choices)
+        self.assertIn("10 MB", choices)
+        self.assertIn("8 MB", choices)
+        self.assertIn("Custom MB", choices)
+        for c in choices:
+            self.assertNotIn("Discord", c)
+            self.assertNotIn("Nitro", c)
+            self.assertNotIn("WhatsApp", c)
+            self.assertNotIn("Email", c)
+
+    def test_job_window_cpu_toggle(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+            from vitarg.jobs import JobWindow
+            from vitarg import engine
+        except ImportError:
+            return
+        app = QApplication.instance() or QApplication([])
+        win = JobWindow("Test Job", "Processing", lambda prog, cancel: ([], []))
+        self.assertTrue(hasattr(win, "btn_cpu_eco"))
+        self.assertTrue(hasattr(win, "btn_cpu_full"))
+        win.btn_cpu_full.click()
+        self.assertEqual(engine.get_cpu_mode(), "full")
+        win.btn_cpu_eco.click()
+        self.assertEqual(engine.get_cpu_mode(), "eco")
+        win.close_and_release()
 
 
 if __name__ == "__main__":

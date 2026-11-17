@@ -114,10 +114,82 @@ class FormDialog(Panel):
             _on_mode_change(self.widgets["mode"].currentText())
 
         if tool.id == "target_compress" and "preset" in self.widgets:
+            import math
+            src = Path(preview_paths[0]) if preview_paths else None
+            dur = getattr(self, "duration", 0.0)
+            orig_mb = 0.0
+            if src and src.is_file():
+                try:
+                    orig_mb = src.stat().st_size / (1024 * 1024)
+                except OSError:
+                    orig_mb = 0.0
+                if not dur:
+                    try:
+                        from .engine import probe
+                        dur = float(probe(src).get("duration", 0.0))
+                    except Exception:
+                        dur = 0.0
+
+            # Calculate minimum realistic size
+            min_mb = 1
+            if dur > 0:
+                # 20 kbps video + 32 kbps audio = 52 kbps min
+                min_bits = 52000 * dur
+                min_mb = max(1, math.ceil(min_bits / (8 * 1024 * 1024 * 0.95)))
+
+            # Filter preset combo items based on achievable size and original size
+            combo = self.widgets["preset"]
+            std_options = [("8 MB", 8), ("10 MB", 10), ("25 MB", 25), ("50 MB", 50)]
+            valid_items = []
+            for label, mb_val in std_options:
+                # Only include if >= min_mb and (if orig_mb > 0) < orig_mb
+                if mb_val >= min_mb:
+                    if orig_mb <= 0 or mb_val < orig_mb:
+                        valid_items.append(label)
+
+            valid_items.append("Custom MB")
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(valid_items)
+            combo.blockSignals(False)
+
+            # Restrict Custom MB spinbox range
+            if "custom_mb" in self.widgets:
+                sb = self.widgets["custom_mb"]
+                max_mb = max(min_mb + 10, int(orig_mb) if orig_mb > 0 else 2000)
+                sb.setRange(min_mb, max_mb)
+                # Set initial value to default or first valid option
+                def_preset = tool.form[0]["default"] if tool.form else "25 MB"
+                if def_preset in valid_items:
+                    chosen_preset = def_preset
+                elif valid_items and valid_items[0] != "Custom MB":
+                    chosen_preset = valid_items[0]
+                else:
+                    chosen_preset = "Custom MB"
+                combo.setCurrentText(chosen_preset)
+                if chosen_preset != "Custom MB" and chosen_preset.split()[0].isdigit():
+                    sb.setValue(int(chosen_preset.split()[0]))
+                else:
+                    sb.setValue(min_mb)
+
+            # Add helpful status badge if video size is known
+            if orig_mb > 0 or min_mb > 1:
+                limit_info = QLabel(
+                    f"ℹ️ Original: <b>{orig_mb:.1f} MB</b> &nbsp;·&nbsp; Minimum achievable: <b>{min_mb} MB</b>"
+                )
+                limit_info.setStyleSheet(
+                    "background: rgba(124, 58, 237, 0.15); border: 1px solid rgba(124, 58, 237, 0.35); "
+                    "border-radius: 6px; padding: 4px 8px; color: #E0E7FF; font-size: 11px; margin-top: 4px;"
+                )
+                limit_info.setAlignment(Qt.AlignCenter)
+                self.body.addWidget(limit_info)
+
             def _on_target_change(p):
                 is_custom = (p == "Custom MB")
                 if "custom_mb" in self.widgets:
                     self.widgets["custom_mb"].setEnabled(is_custom)
+                    if not is_custom and p.split()[0].isdigit():
+                        self.widgets["custom_mb"].setValue(int(p.split()[0]))
             self.widgets["preset"].currentTextChanged.connect(_on_target_change)
             _on_target_change(self.widgets["preset"].currentText())
 

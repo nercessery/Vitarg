@@ -55,7 +55,7 @@ class TestMilestone2Options(unittest.TestCase):
         st.compress_preset = "Strong"
 
         dlg_tc = FormDialog(tools.BY_ID["target_compress"], st)
-        self.assertEqual(dlg_tc.widgets["preset"].currentText(), "<25 MB (Discord)")
+        self.assertEqual(dlg_tc.widgets["preset"].currentText(), "25 MB")
 
         dlg_eq = FormDialog(tools.BY_ID["eq"], st)
         self.assertEqual(dlg_eq.widgets["preset"].currentText(), "Bass Boost (+8dB)")

@@ -242,12 +242,77 @@ def probe(path) -> dict:
     return res.copy()
 
 
+_CPU_MODE: str = "eco"
+_ACTIVE_PROCESSES: set[subprocess.Popen] = set()
+_PROCESS_LOCK = threading.Lock()
+
+
+def get_cpu_mode() -> str:
+    """Return current CPU usage mode: 'eco' (max ~40-50% CPU) or 'full' (100% CPU)."""
+    global _CPU_MODE
+    return _CPU_MODE
+
+
+def set_cpu_mode(mode: str) -> None:
+    """Set global CPU mode and immediately adjust affinity & priority of all active processes."""
+    global _CPU_MODE
+    _CPU_MODE = "eco" if str(mode).lower() in ("eco", "low", "limit", "40%", "50%") else "full"
+    with _PROCESS_LOCK:
+        for p in list(_ACTIVE_PROCESSES):
+            try:
+                if p.poll() is None:
+                    apply_cpu_throttling(p, _CPU_MODE)
+            except Exception:
+                pass
+
+
+def apply_cpu_throttling(p: subprocess.Popen, mode: Optional[str] = None) -> None:
+    """Apply OS CPU affinity and process priority according to the selected CPU mode."""
+    m = mode or get_cpu_mode()
+    total_cores = os.cpu_count() or 4
+    if m == "eco":
+        eco_cores = max(1, int(total_cores * 0.45))
+        mask = (1 << eco_cores) - 1
+        priority = 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        eco_cores = total_cores
+        mask = (1 << total_cores) - 1
+        priority = 0x00000020  # NORMAL_PRIORITY_CLASS
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            h = int(p._handle)
+            ctypes.windll.kernel32.SetProcessAffinityMask(h, ctypes.c_size_t(mask))
+            ctypes.windll.kernel32.SetPriorityClass(h, priority)
+        except Exception:
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            if hasattr(os, "sched_setaffinity"):
+                cores = list(range(eco_cores))
+                os.sched_setaffinity(p.pid, set(cores))
+        except Exception:
+            pass
+
+
 def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
                cancel: Optional[threading.Event] = None) -> None:
+    mode = get_cpu_mode()
+    thread_args = []
+    if "-threads" not in args:
+        total_cores = os.cpu_count() or 4
+        if mode == "eco":
+            eco_threads = max(1, int(total_cores * 0.45))
+            thread_args = ["-threads", str(eco_threads)]
+
     cmd = [need_tool("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
-           "-progress", "pipe:1", "-nostats", *args]
+           *thread_args, "-progress", "pipe:1", "-nostats", *args]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          encoding="utf-8", errors="replace", creationflags=NOWIN)
+    apply_cpu_throttling(p, mode)
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.add(p)
     err: list[str] = []
     t = threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True)
     t.start()
@@ -265,6 +330,8 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
                     pass
         p.wait()
     finally:
+        with _PROCESS_LOCK:
+            _ACTIVE_PROCESSES.discard(p)
         try:
             p.stdout.close()
         except Exception:

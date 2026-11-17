@@ -1,6 +1,6 @@
 """File tools for the second ('tools') wheel. Every tool does real work and never modifies the source."""
 from __future__ import annotations
-import shutil, threading
+import math, shutil, threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,7 +56,7 @@ TOOLS = [
         {"key": "height", "label": "Height (px, 0 = auto)", "kind": INT, "min": 0, "max": 8640, "default": 0}]),
     Tool("target_compress", "TARGET SIZE", ("video",), form=[
         {"key": "preset", "label": "Target size", "kind": CHOICE,
-         "choices": ["<25 MB (Discord)", "<50 MB (Nitro)", "<10 MB (Email)", "<8 MB (WhatsApp)", "Custom MB"], "default": "<25 MB (Discord)"},
+         "choices": ["25 MB", "50 MB", "10 MB", "8 MB", "Custom MB"], "default": "25 MB"},
         {"key": "custom_mb", "label": "Custom size (MB)", "kind": INT, "min": 1, "max": 2000, "default": 25}]),
     Tool("volume", "VOLUME BOOST", ("audio", "video"), form=[
         {"key": "volume", "label": "Volume boost %", "kind": INT, "min": 10, "max": 600, "default": 150},
@@ -695,8 +695,16 @@ def target_compress_video(src: Path, ws: Workspace, params: dict, progress, canc
     if dur <= 0:
         raise ConversionError("Cannot determine video duration for target compression.")
 
-    preset = params.get("preset", "<25 MB (Discord)")
+    preset = params.get("preset", "25 MB")
     preset_map = {
+        "25 MB": 24.5,
+        "50 MB": 49.0,
+        "10 MB": 9.5,
+        "8 MB": 7.5,
+        "<25 MB": 24.5,
+        "<50 MB": 49.0,
+        "<10 MB": 9.5,
+        "<8 MB": 7.5,
         "<25 MB (Discord)": 24.5,
         "<50 MB (Nitro)": 49.0,
         "<10 MB (Email)": 9.5,
@@ -706,12 +714,25 @@ def target_compress_video(src: Path, ws: Workspace, params: dict, progress, canc
     target_bits = target_mb * 8 * 1024 * 1024 * 0.95
 
     has_audio = info.get("audio", False)
-    a_bitrate_k = 128 if has_audio else 0
+    # Dynamically scale audio bitrate down to 48k/64k if target is tight
+    if has_audio:
+        target_total_kbps = (target_bits / dur) / 1000
+        if target_total_kbps < 150:
+            a_bitrate_k = 48
+        elif target_total_kbps < 300:
+            a_bitrate_k = 64
+        else:
+            a_bitrate_k = 128
+    else:
+        a_bitrate_k = 0
+
     total_audio_bits = a_bitrate_k * 1000 * dur if has_audio else 0
 
     total_video_bits = target_bits - total_audio_bits
-    if total_video_bits < 20000 * dur:
-        raise ConversionError(f"Target size ({target_mb:g} MB) is too small for a {dur:.0f}s video.")
+    min_video_bps = 20000  # 20 kbps floor
+    if total_video_bits < min_video_bps * dur:
+        min_mb = max(1, math.ceil(((min_video_bps + (32000 if has_audio else 0)) * dur) / (8 * 1024 * 1024 * 0.95)))
+        raise ConversionError(f"Target size ({target_mb:g} MB) is too small for a {dur:.0f}s video. Minimum achievable size is {min_mb} MB.")
 
     v_bitrate_k = max(20, int((total_video_bits / dur) / 1000))
     out = _out(ws, src, f"Target_{int(target_mb)}MB", "mp4")

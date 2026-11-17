@@ -99,6 +99,7 @@ class Settings:
     auto_update: bool = True             # automatically check for updates on startup
     prompt_rename: bool = True           # prompt to review/edit file name before running
     context_menu: bool = True            # Windows Explorer / Linux context menu integration
+    cpu_mode: str = "eco"                # "eco" (max 40-50% CPU for smooth PC & gaming) | "full" (100% CPU)
 
     # ---- persistence -------------------------------------------------
     @staticmethod

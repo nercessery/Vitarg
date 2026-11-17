@@ -159,7 +159,7 @@ class TestTier1FeatureCoverage(UserRequirementsTestBase):
             self.assertIn("preset", dlg.widgets)
             curr = dlg.widgets["preset"].currentText()
             self.assertNotEqual(curr, "Strong", "target_compress preset must not be overwritten by settings.compress_preset")
-            self.assertEqual(curr, "<25 MB (Discord)")
+            self.assertEqual(curr, "25 MB")
         finally:
             dlg.deleteLater()
 

@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPainterPath, QBrush
 from PySide6.QtWidgets import (QLabel, QPushButton, QTextEdit, QWidget, QHBoxLayout,
                                QVBoxLayout)
 
+from . import engine
 from .engine import Cancelled
 from .estimator import estimate_conversion, format_size
 from .theme import Panel, PURPLE
@@ -141,6 +142,33 @@ class JobWindow(Panel):
         if not custom_name:
             self.rename_container.hide()
 
+        # 3. CPU Throttling Mode Selector (User requested ~40-50% CPU limit to keep PC & games fast)
+        self.cpu_container = QWidget()
+        cpu_lay = QHBoxLayout(self.cpu_container)
+        cpu_lay.setContentsMargins(0, 4, 0, 4)
+        cpu_lay.setSpacing(6)
+
+        cpu_lbl = QLabel("CPU Limit:")
+        cpu_lbl.setStyleSheet("color: #9CA3AF; font-size: 11px; font-weight: bold;")
+        cpu_lay.addWidget(cpu_lbl)
+
+        self.btn_cpu_eco = QPushButton("🍃 Low CPU (~40%)")
+        self.btn_cpu_eco.setToolTip("Limits CPU to ~40-50% so gaming and other PC tasks stay smooth without lag")
+        self.btn_cpu_full = QPushButton("⚡ Full Speed (100%)")
+        self.btn_cpu_full.setToolTip("Uses 100% CPU to finish conversion as fast as possible")
+
+        self.btn_cpu_eco.setFixedHeight(26)
+        self.btn_cpu_full.setFixedHeight(26)
+
+        self.btn_cpu_eco.clicked.connect(lambda: self._set_cpu_mode("eco"))
+        self.btn_cpu_full.clicked.connect(lambda: self._set_cpu_mode("full"))
+
+        cpu_lay.addWidget(self.btn_cpu_eco)
+        cpu_lay.addWidget(self.btn_cpu_full)
+        cpu_lay.addStretch(1)
+        self.body.addWidget(self.cpu_container)
+        self._update_cpu_buttons(engine.get_cpu_mode())
+
         # Worker initialization
         self.err = None
         self.worker = Worker(fn)
@@ -152,7 +180,29 @@ class JobWindow(Panel):
         self.show()
         self.worker.start()
 
+    def _set_cpu_mode(self, mode: str):
+        engine.set_cpu_mode(mode)
+        self._update_cpu_buttons(mode)
+
+    def _update_cpu_buttons(self, mode: str):
+        active_style = (
+            "background: rgba(124, 58, 237, 0.45); border: 1.5px solid #8B5CF6; "
+            "color: #FFFFFF; font-weight: bold; border-radius: 6px; padding: 2px 10px; font-size: 11px;"
+        )
+        inactive_style = (
+            "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.15); "
+            "color: #9CA3AF; font-weight: normal; border-radius: 6px; padding: 2px 10px; font-size: 11px;"
+        )
+        if mode == "eco":
+            self.btn_cpu_eco.setStyleSheet(active_style)
+            self.btn_cpu_full.setStyleSheet(inactive_style)
+        else:
+            self.btn_cpu_eco.setStyleSheet(inactive_style)
+            self.btn_cpu_full.setStyleSheet(active_style)
+
     def _done(self, outs, errs):
+        if hasattr(self, "cpu_container"):
+            self.cpu_container.hide()
         if errs:
             self._fail(errs, bool(outs))
             return
@@ -295,6 +345,8 @@ class JobWindow(Panel):
                 pass
 
     def _fail(self, errs, partial=False):
+        if hasattr(self, "cpu_container"):
+            self.cpu_container.hide()
         self.bar.hide()
         self.rename_container.hide()
         self.sub.setText("Some files could not be processed." if partial else "The operation failed.")
