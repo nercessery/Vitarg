@@ -13,9 +13,9 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 ### 🔄 File Conversion (Shift + Drag)
 | Category | Formats |
 |---|---|
-| **Image** | PNG, JPG, WebP, BMP, TIFF, GIF, ICO, HEIC, SVG → each other, PDF, DOCX |
+| **Image** | PNG, JPG, WebP, BMP, TIFF, ICO, HEIC, SVG → each other, PDF, DOCX |
 | **Audio** | MP3, WAV, FLAC, AAC, OGG, M4A, OPUS, WMA, AIFF, AC3, ALAC, AMR |
-| **Video** | MP4, MKV, MOV, AVI, WebM, WMV, FLV (+ GIF output, audio extraction) |
+| **Video** | MP4, MKV, MOV, AVI, WebM, WMV, FLV (audio extraction) |
 | **Document** | PDF ↔ DOCX/JPG/PNG/TXT, TXT/MD/HTML/DOCX ↔ each other |
 | **Archive** | ZIP, TAR, GZ, 7Z |
 
@@ -43,7 +43,7 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 - **Extract Text** — Extract text from PDF documents and images (with OCR support) directly to `.txt` files, clipboard, or both.
 
 ### ⚡ Smart Productivity Tools
-- **CPU Throttling Switch (Eco Mode)** — Toggle between Eco Mode (max ~40-50% CPU limit) and Full Speed (100% CPU) right on the progress window so your PC never slows down during heavy conversions.
+- **CPU Throttling Switch (Eco Mode)** — Smooth background CPU Eco Mode preserves system performance and prevents game/PC lag during conversions.
 - **Undo / Rollback (Ctrl+Z)** — Revert the last operation with one click from the completion dialog, tray menu, or Settings. Safely deletes generated files and restores any backed-up originals.
 - **Pre-Action Rename & Custom Naming** — Review and customize output file names or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) before converting or running tools, with live output preview and automatic extension handling.
 - **Conversion Preview & Size Estimator** — Real-time estimation of output file size and quality ratio before and during processing.

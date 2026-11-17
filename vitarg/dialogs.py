@@ -527,7 +527,7 @@ class ActionConfirmDialog(Panel):
         # 3. Conversion Options Section (when is_conv and target is audio or video)
         target_lower = str(target_or_tool).lower().lstrip(".")
         self.is_audio_target = target_lower in engine.AUDIO_OUT
-        self.is_video_target = target_lower in engine.VIDEO_OUT and target_lower != "gif"
+        self.is_video_target = target_lower in engine.VIDEO_OUT
         self.has_audio_options = is_conv and (self.is_audio_target or self.is_video_target)
 
         if self.has_audio_options:

@@ -344,6 +344,7 @@ class JobWindow(Panel):
             self._auto_close_timer.stop()
         if hasattr(self, "worker") and self.worker and self.worker.isRunning():
             self.worker.cancel.set()
+            engine.kill_active_processes()
             self.worker.wait(1500)
         self.hide()
         if not getattr(self, "_released", False):
@@ -355,6 +356,7 @@ class JobWindow(Panel):
             self._auto_close_timer.stop()
         if hasattr(self, "worker") and self.worker and self.worker.isRunning():
             self.worker.cancel.set()
+            engine.kill_active_processes()
             self.worker.wait(1500)
         if not getattr(self, "_released", False):
             self._released = True

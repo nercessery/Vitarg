@@ -47,12 +47,12 @@ def need_tool(name: str) -> str:
 ALIASES = {"jpeg": "jpg", "jpe": "jpg", "tif": "tiff", "htm": "html", "markdown": "md",
            "text": "txt", "log": "txt", "tgz": "gz", "heif": "heic", "oga": "ogg", "mpeg4": "mp4"}
 
-IMAGE_IN = ["png", "jpg", "webp", "bmp", "tiff", "gif", "ico", "heic", "svg"]
-IMAGE_OUT = ["jpg", "png", "webp", "bmp", "tiff", "gif", "ico", "pdf", "docx"]
+IMAGE_IN = ["png", "jpg", "webp", "bmp", "tiff", "ico", "heic", "svg"]
+IMAGE_OUT = ["jpg", "png", "webp", "bmp", "tiff", "ico", "pdf", "docx"]
 AUDIO_IN = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "aiff", "ac3", "alac", "amr"]
 AUDIO_OUT = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "aiff", "ac3", "alac"]
 VIDEO_IN = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv"]
-VIDEO_OUT = ["mp4", "mov", "mkv", "webm", "avi", "gif"]
+VIDEO_OUT = ["mp4", "mov", "mkv", "webm", "avi"]
 ARCHIVES = ["zip", "tar", "gz", "7z"]
 DOC_TARGETS = {
     "pdf": ["docx", "jpg", "png", "txt"],
@@ -72,8 +72,6 @@ def fmt_of(path) -> str:
 
 
 def family(fmt: str) -> str:
-    if fmt == "gif":
-        return "gif"
     if fmt in IMAGE_IN:
         return "image"
     if fmt in AUDIO_IN:
@@ -102,8 +100,6 @@ def targets_for_format(fmt: str) -> list[str]:
         if has_heif() and fmt != "heic":
             t.append("heic")
         return t
-    if fam == "gif":
-        return [x for x in IMAGE_OUT if x != "gif"] + ["mp4", "mov", "mkv", "webm"]
     if fam == "audio":
         return [x for x in AUDIO_OUT if x != fmt]
     if fam == "video":
@@ -296,6 +292,26 @@ def apply_cpu_throttling(p: subprocess.Popen, mode: Optional[str] = None) -> Non
             pass
 
 
+def kill_active_processes() -> None:
+    """Force kill all active child processes (e.g. ffmpeg) immediately."""
+    with _PROCESS_LOCK:
+        procs = list(_ACTIVE_PROCESSES)
+        _ACTIVE_PROCESSES.clear()
+    for p in procs:
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                               capture_output=True, creationflags=NOWIN)
+            else:
+                p.kill()
+        except Exception:
+            pass
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
 def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
                cancel: Optional[threading.Event] = None) -> None:
     mode = get_cpu_mode()
@@ -329,6 +345,26 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
     apply_cpu_throttling(p, mode)
     with _PROCESS_LOCK:
         _ACTIVE_PROCESSES.add(p)
+
+    def _cancel_watcher():
+        if cancel and cancel.wait():
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                                   capture_output=True, creationflags=NOWIN)
+                else:
+                    p.kill()
+            except Exception:
+                pass
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    if cancel is not None:
+        cw = threading.Thread(target=_cancel_watcher, daemon=True)
+        cw.start()
+
     err: list[str] = []
     t = threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True)
     t.start()
@@ -356,8 +392,12 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
             p.stderr.close()
         except Exception:
             pass
+    if cancel is not None and cancel.is_set():
+        raise Cancelled()
     t.join(2)
     if p.returncode != 0:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
         msg = (err[0] if err else "").strip()
         raise ConversionError("FFmpeg failed:\n" + (msg[-1500:] or f"exit code {p.returncode}"))
 
@@ -465,37 +505,6 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel,
         else:
             codec = [a.replace("{abr}", str(abr)) for a in AUDIO_CODEC[target]]
         args = ["-i", str(src), "-map", "0:a:0", "-vn", *af_args, *codec, str(out)]
-    elif target == "gif":
-        if not info["video"]:
-            raise ConversionError("The source has no video stream.")
-        # Two-pass palette generation: avoids buffering all uncompressed frames in memory!
-        # Single-pass split[a][b];[a]palettegen[p];[b][p]paletteuse causes FFmpeg to buffer gigabytes of raw frames in RAM.
-        fd, pal_tmp = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        pal_path = Path(pal_tmp)
-        try:
-            fps_val = int(params.get("fps", 15)) if params else 15
-            scale_f = f"fps={fps_val},scale=min(720\\,iw):-2:flags=lanczos"
-            p1_args = ["-i", str(src), "-an", "-vf", f"{scale_f},palettegen=stats_mode=diff", str(pal_path)]
-            def p1_prog(p: float) -> None:
-                progress(p * 0.3)
-            run_ffmpeg(p1_args, info["duration"], p1_prog, cancel)
-
-            if cancel and cancel.is_set():
-                raise Cancelled()
-
-            p2_lavfi = f"[0:v]{scale_f}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
-            p2_args = ["-i", str(src), "-i", str(pal_path), "-lavfi", p2_lavfi, "-loop", "0", str(out)]
-            def p2_prog(p: float) -> None:
-                progress(30.0 + p * 0.7)
-            run_ffmpeg(p2_args, info["duration"], p2_prog, cancel)
-        finally:
-            try:
-                if pal_path.exists():
-                    pal_path.unlink()
-            except Exception:
-                pass
-        args = None
     else:
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
@@ -520,14 +529,13 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel,
             args = ["-i", str(src), "-map", "0:v:0", "-an", *clean_v, str(out)]
         else:
             args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *af_args, *v_args, str(out)]
-    if args is not None:
-        run_ffmpeg(args, info["duration"], progress, cancel)
+    run_ffmpeg(args, info["duration"], progress, cancel)
     chk = probe(out)
     if target in AUDIO_OUT and not chk["audio"]:
         raise ConversionError("Validation failed: output has no audio stream.")
     if target not in AUDIO_OUT and not chk["video"]:
         raise ConversionError("Validation failed: output has no video stream.")
-    if info["duration"] > 3 and sf != "gif" and target != "gif" and chk["duration"] and abs(chk["duration"] - info["duration"]) > max(2, info["duration"] * 0.05):
+    if info["duration"] > 3 and chk["duration"] and abs(chk["duration"] - info["duration"]) > max(2, info["duration"] * 0.05):
         raise ConversionError(f"Validation failed: output duration {chk['duration']:.1f}s differs from source {info['duration']:.1f}s.")
 
 
@@ -593,7 +601,7 @@ def convert_image(src: Path, target: str, out: Path, settings) -> None:
     try:
         n = getattr(raw_im, "n_frames", 1)
         sf = fmt_of(src)
-        animated_ok = target in ("gif", "webp", "tiff") and n > 1
+        animated_ok = target in ("webp", "tiff") and n > 1
         if not animated_ok:
             try:
                 raw_im.seek(0)
@@ -610,8 +618,6 @@ def convert_image(src: Path, target: str, out: Path, settings) -> None:
                 fr = ImageOps.exif_transpose(raw_im).convert("RGBA")
                 frames.append(fr if target != "tiff" else _flatten(fr))
             kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
-            if target == "gif":
-                kw["disposal"] = 2
             if target == "webp":
                 kw["quality"] = settings.webp_quality
             if target == "tiff":
@@ -629,8 +635,6 @@ def convert_image(src: Path, target: str, out: Path, settings) -> None:
                 _flatten(im).save(out, "BMP")
             elif target == "tiff":
                 (im if im.mode in ("RGB", "RGBA", "L") else im.convert("RGBA")).save(out, "TIFF", compression="tiff_lzw")
-            elif target == "gif":
-                im.convert("RGBA").save(out, "GIF")
             elif target == "ico":
                 ic = im.convert("RGBA")
                 ic.thumbnail((256, 256))
@@ -975,9 +979,9 @@ def convert(src, target: str, settings, progress: Progress = _noop,
     with Workspace(settings, src) as ws:
         ext = "tar.gz" if target == "gz" else target
         out = ws.path(f"{src.stem if not src.name.lower().endswith('.tar.gz') else src.name[:-7]}.{ext}")
-        if fam in ("audio", "video") or (fam == "gif" and target in ("mp4", "mov", "mkv", "webm")):
+        if fam in ("audio", "video"):
             convert_media(src, target, out, settings, progress, cancel, params=params)
-        elif fam in ("image", "gif"):
+        elif fam == "image":
             convert_image(src, target, out, settings)
         elif fam in ("pdf", "doc"):
             convert_document(src, sf, target, ws, settings, progress)

@@ -23,7 +23,7 @@ def format_rename(original_path: str | Path, pattern_or_name: str, ext: str, ind
     # If user typed an existing or conflicting extension, strip it (e.g. photo.png when converting to .jpg)
     p_path = Path(p)
     if p_path.suffix and p_path.suffix.lower() != clean_ext.lower():
-        known_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff", ".ico",
+        known_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".ico",
                       ".pdf", ".docx", ".txt", ".mp4", ".mkv", ".mov", ".avi", ".mp3",
                       ".wav", ".flac", ".zip", ".7z", ".tar", ".gz"}
         if p_path.suffix.lower() in known_exts:

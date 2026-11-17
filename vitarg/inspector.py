@@ -96,7 +96,7 @@ def get_file_info(file_path: str | Path, compute_hash: bool = True) -> dict:
     }
 
     # Image info
-    if fam in ("image", "gif") or src_fmt in ("png", "jpg", "jpeg", "webp", "bmp", "tiff", "gif", "ico"):
+    if fam == "image" or src_fmt in ("png", "jpg", "jpeg", "webp", "bmp", "tiff", "ico"):
         try:
             from PIL import Image, ImageOps, ExifTags
             with Image.open(p) as im:

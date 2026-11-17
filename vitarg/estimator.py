@@ -37,7 +37,7 @@ def estimate_conversion(src: str | Path, target: str, settings=None) -> dict:
     factor = 1.0
     quality = "High Quality"
 
-    if fam in ("image", "gif"):
+    if fam == "image":
         # Image conversion factors
         if src_fmt in ("png", "bmp", "tiff"):
             if tgt in ("jpg", "jpeg"):
@@ -55,9 +55,6 @@ def estimate_conversion(src: str | Path, target: str, settings=None) -> dict:
             elif tgt in ("bmp", "tiff"):
                 factor = 1.5
                 quality = "Uncompressed"
-            elif tgt == "gif":
-                factor = 0.4
-                quality = "256 Colors"
         elif src_fmt in ("jpg", "jpeg", "webp"):
             if tgt in ("png", "bmp", "tiff"):
                 factor = 2.5   # Decompressing JPEG to PNG often inflates file size

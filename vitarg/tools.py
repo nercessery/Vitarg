@@ -84,7 +84,6 @@ BY_ID = {t.id: t for t in TOOLS}
 
 def tools_for(paths) -> list[Tool]:
     fams = {family(fmt_of(p)) for p in paths}
-    fams = {("image" if f == "gif" else f) for f in fams}
     if len(fams) != 1 or "" in fams:
         return []
     fam = next(iter(fams))
@@ -134,8 +133,6 @@ def _save_same(im, out: Path, fmt: str, quality=92):
         im.save(out, "TIFF", compression="tiff_lzw")
     elif fmt == "bmp":
         engine._flatten(im).save(out, "BMP")
-    elif fmt == "gif":
-        im.save(out, "GIF")
     else:
         raise ConversionError(f"This tool supports JPG, PNG, WebP, TIFF and BMP images, not .{fmt}.")
 
@@ -612,7 +609,7 @@ def resize_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
         suffix = f"{tw}x{th}"
         out = _out(ws, src, suffix)
 
-        if n > 1 and fmt in ("gif", "webp"):
+        if n > 1 and fmt == "webp":
             frames, durs = [], []
             for i in range(n):
                 raw.seek(i)
@@ -620,8 +617,6 @@ def resize_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
                 fr = ImageOps.exif_transpose(raw).convert("RGBA")
                 frames.append(fr.resize((tw, th), Image.LANCZOS))
             kw = {"save_all": True, "append_images": frames[1:], "duration": durs, "loop": 0}
-            if fmt == "gif":
-                kw["disposal"] = 2
             frames[0].save(out, fmt.upper(), **kw)
         else:
             im = ImageOps.exif_transpose(raw)
@@ -1012,8 +1007,6 @@ def run_tool(tool_id: str, sources, params: dict, settings, progress=_noop,
         try:
             with Workspace(settings, s) as ws:
                 fam = family(fmt_of(s))
-                if fam == "gif":
-                    fam = "image"
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 if tool_id == "compress":
@@ -1169,8 +1162,6 @@ def make_preview(tool_id: str, paths, p: dict):
     from PIL import Image, ImageDraw
     src = Path(paths[0])
     fam = family(fmt_of(src))
-    if fam == "gif":
-        fam = "image"
     if tool_id in ("edit", "addbg"):
         im = thumb(src)
         out = preview_image(tool_id, im, p)

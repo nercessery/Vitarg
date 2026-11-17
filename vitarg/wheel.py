@@ -23,7 +23,7 @@ R_CORE = 82.0                      # centre disc
 GAP_PX = 9.0                       # visual gap between petals
 ROUND = 13.0                       # petal corner rounding
 
-DEFAULT_CONV_FALLBACK = ["mp4", "mp3", "jpg", "png", "webp", "pdf", "gif", "wav", "docx", "zip"]
+DEFAULT_CONV_FALLBACK = ["mp4", "mp3", "jpg", "png", "webp", "pdf", "wav", "docx", "zip"]
 
 
 class Wheel(QWidget):
