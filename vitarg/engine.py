@@ -29,16 +29,55 @@ def app_dir() -> Path:
 
 def find_tool(name: str) -> Optional[str]:
     exe = name + (".exe" if sys.platform == "win32" else "")
-    for d in (app_dir() / "tools", Path(sys.executable).parent / "tools", app_dir()):
-        p = d / exe
-        if p.exists():
+    candidates = [
+        app_dir() / "tools" / exe,
+        Path(sys.executable).parent / "tools" / exe,
+        Path(sys.executable).parent / "_internal" / "tools" / exe,
+        app_dir() / exe,
+    ]
+    for p in candidates:
+        if p.is_file():
+            if sys.platform != "win32":
+                try:
+                    if not os.access(p, os.X_OK):
+                        os.chmod(p, p.stat().st_mode | 0o755)
+                except OSError:
+                    pass
             return str(p)
-    return shutil.which(name)
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # Fallback to standard system paths on Linux / Unix
+    if sys.platform != "win32":
+        sys_paths = [
+            f"/usr/bin/{name}",
+            f"/usr/local/bin/{name}",
+            f"/snap/bin/{name}",
+            f"/var/lib/flatpak/exports/bin/{name}",
+            str(Path.home() / ".local" / "bin" / name),
+            str(Path.home() / ".nix-profile" / "bin" / name),
+        ]
+        for sp in sys_paths:
+            p = Path(sp)
+            if p.is_file() and os.access(p, os.X_OK):
+                return str(p)
+
+    return None
 
 
 def need_tool(name: str) -> str:
     p = find_tool(name)
     if not p:
+        if sys.platform.startswith("linux"):
+            raise ConversionError(
+                f"Required tool '{name}' was not found.\n"
+                f"Please ensure '{name}' is in the 'tools' directory, or install it via your package manager:\n"
+                f"  Ubuntu/Debian: sudo apt install {name}\n"
+                f"  Fedora:        sudo dnf install {name}\n"
+                f"  Arch:          sudo pacman -S {name}"
+            )
         raise ConversionError(f"Required tool '{name}' was not found (expected in the 'tools' folder).")
     return p
 

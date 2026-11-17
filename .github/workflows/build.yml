@@ -73,12 +73,21 @@ jobs:
             echo "No tests directory found, skipping."
           fi
 
+      - name: Fetch Linux Standalone Conversion Tools (FFmpeg, FFprobe, Pandoc)
+        run: |
+          python scripts/fetch_tools.py --platform linux --dest tools
+          chmod +x tools/ffmpeg tools/ffprobe tools/pandoc
+          ls -lh tools
+
       - name: Build Standalone Executable with PyInstaller
         run: |
           pyinstaller --noconfirm --clean --windowed --name Vitarg \
-            --add-data "assets:assets" \
+            --add-data "assets:assets" --add-data "tools:tools" \
             --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf \
             run_vitarg.py
+          mkdir -p dist/Vitarg/tools
+          cp -r tools/* dist/Vitarg/tools/ || true
+          chmod -R +x dist/Vitarg/tools/ || true
 
       - name: Verify Startup (Offscreen Selftest)
         run: |
