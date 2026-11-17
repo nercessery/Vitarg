@@ -96,9 +96,9 @@ def diff_local_with_manifest(app_root: Path, manifest: dict) -> dict:
 
     # Check critical tools
     if sys.platform == "win32":
-        crit_tools = ["tools/ffmpeg.exe", "tools/ffprobe.exe"]
+        crit_tools = ["tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/pandoc.exe"]
     else:
-        crit_tools = ["tools/ffmpeg", "tools/ffprobe"]
+        crit_tools = ["tools/ffmpeg", "tools/ffprobe", "tools/pandoc"]
 
     tools_intact = True
     for ct in crit_tools:
@@ -221,12 +221,7 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                                         break
 
                             # Check local tools
-                            local_app = engine.app_dir()
-                            has_local_tools = False
-                            if sys.platform == "win32":
-                                has_local_tools = (local_app / "tools" / "ffmpeg.exe").exists() and (local_app / "tools" / "ffprobe.exe").exists()
-                            else:
-                                has_local_tools = bool(shutil.which("ffmpeg") or (local_app / "tools" / "ffmpeg").exists())
+                            has_local_tools = bool(engine.find_tool("ffmpeg") and engine.find_tool("ffprobe"))
 
                             is_delta = False
                             chosen_asset = None
@@ -415,7 +410,8 @@ class UpdateDialog(Panel):
         self.bar.show()
         self.status.setText("Connecting to GitHub...")
 
-        filename = self.info.get("asset_name") or f"Vitarg-Setup-{self.info['version']}.exe"
+        default_name = f"Vitarg-Setup-{self.info['version']}.exe" if sys.platform == "win32" else f"Vitarg-linux-x86_64.tar.gz"
+        filename = self.info.get("asset_name") or default_name
         self.dl_thread = DownloadThread(self.info["download_url"], filename)
         self.dl_thread.progress.connect(self._on_progress)
         self.dl_thread.finished.connect(self._on_finished)

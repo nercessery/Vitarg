@@ -54,7 +54,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg pandoc \
+          sudo apt-get install -y \
             libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 \
@@ -65,19 +65,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf pyinstaller requests
 
+      - name: Fetch Linux Standalone Conversion Tools (FFmpeg, FFprobe, Pandoc)
+        run: |
+          rm -rf tools
+          mkdir -p tools
+          python scripts/fetch_tools.py --platform linux --dest tools
+          chmod +x tools/ffmpeg tools/ffprobe tools/pandoc
+          # Verify zero Windows binaries exist
+          test ! -f tools/ffmpeg.exe
+          test ! -f tools/pandoc.exe
+          ls -lh tools
+
       - name: Run Tests
         run: |
+          export PATH="$PWD/tools:$PATH"
           if [ -d "tests" ]; then
             python -m unittest discover -s tests -p "test_*.py"
           else
             echo "No tests directory found, skipping."
           fi
-
-      - name: Fetch Linux Standalone Conversion Tools (FFmpeg, FFprobe, Pandoc)
-        run: |
-          python scripts/fetch_tools.py --platform linux --dest tools
-          chmod +x tools/ffmpeg tools/ffprobe tools/pandoc
-          ls -lh tools
 
       - name: Build Standalone Executable with PyInstaller
         run: |
@@ -87,7 +93,11 @@ jobs:
             run_vitarg.py
           mkdir -p dist/Vitarg/tools
           cp -r tools/* dist/Vitarg/tools/ || true
+          # Strictly purge any Windows binaries from the Linux package
+          find dist/Vitarg -name "*.exe" -delete
+          find dist/Vitarg -name "*.bat" -delete
           chmod -R +x dist/Vitarg/tools/ || true
+          chmod +x dist/Vitarg/Vitarg
 
       - name: Verify Startup (Offscreen Selftest)
         run: |
@@ -96,6 +106,12 @@ jobs:
 
       - name: Package Linux Distribution
         run: |
+          EXE_COUNT=$(find dist/Vitarg -name "*.exe" | wc -l)
+          if [ "$EXE_COUNT" -ne 0 ]; then
+            echo "Error: Windows executable files detected in Linux distribution!"
+            find dist/Vitarg -name "*.exe"
+            exit 1
+          fi
           tar -czvf dist/Vitarg-linux-x86_64.tar.gz -C dist Vitarg
 
       - name: Upload Linux Artifact

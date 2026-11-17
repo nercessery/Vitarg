@@ -28,13 +28,20 @@ def app_dir() -> Path:
 
 
 def find_tool(name: str) -> Optional[str]:
-    exe = name + (".exe" if sys.platform == "win32" else "")
+    # On Windows, look for .exe; on Linux/macOS strictly look for extensionless Unix binary
+    clean_name = name.removesuffix(".exe") if sys.platform != "win32" else name
+    exe = clean_name if sys.platform != "win32" else (clean_name + ("" if clean_name.endswith(".exe") else ".exe"))
+
     candidates = [
         app_dir() / "tools" / exe,
         Path(sys.executable).parent / "tools" / exe,
         Path(sys.executable).parent / "_internal" / "tools" / exe,
         app_dir() / exe,
     ]
+    if sys.platform != "win32":
+        candidates.append(Path.home() / ".local" / "share" / "vitarg" / "tools" / exe)
+        candidates.append(Path.home() / ".vitarg" / "tools" / exe)
+
     for p in candidates:
         if p.is_file():
             if sys.platform != "win32":
@@ -45,19 +52,19 @@ def find_tool(name: str) -> Optional[str]:
                     pass
             return str(p)
 
-    found = shutil.which(name)
+    found = shutil.which(clean_name)
     if found:
         return found
 
     # Fallback to standard system paths on Linux / Unix
     if sys.platform != "win32":
         sys_paths = [
-            f"/usr/bin/{name}",
-            f"/usr/local/bin/{name}",
-            f"/snap/bin/{name}",
-            f"/var/lib/flatpak/exports/bin/{name}",
-            str(Path.home() / ".local" / "bin" / name),
-            str(Path.home() / ".nix-profile" / "bin" / name),
+            f"/usr/bin/{clean_name}",
+            f"/usr/local/bin/{clean_name}",
+            f"/snap/bin/{clean_name}",
+            f"/var/lib/flatpak/exports/bin/{clean_name}",
+            str(Path.home() / ".local" / "bin" / clean_name),
+            str(Path.home() / ".nix-profile" / "bin" / clean_name),
         ]
         for sp in sys_paths:
             p = Path(sp)
@@ -69,11 +76,20 @@ def find_tool(name: str) -> Optional[str]:
 
 def need_tool(name: str) -> str:
     p = find_tool(name)
+    if not p and sys.platform.startswith("linux"):
+        # Auto-download missing Linux standalone binary from the internet
+        try:
+            from . import fetcher
+            fetcher.ensure_linux_tool(name)
+            p = find_tool(name)
+        except Exception:
+            pass
+
     if not p:
         if sys.platform.startswith("linux"):
             raise ConversionError(
-                f"Required tool '{name}' was not found.\n"
-                f"Please ensure '{name}' is in the 'tools' directory, or install it via your package manager:\n"
+                f"Required tool '{name}' was not found and could not be downloaded automatically.\n"
+                f"Please ensure internet access, or place '{name}' in the 'tools' directory, or install it via your package manager:\n"
                 f"  Ubuntu/Debian: sudo apt install {name}\n"
                 f"  Fedora:        sudo dnf install {name}\n"
                 f"  Arch:          sudo pacman -S {name}"

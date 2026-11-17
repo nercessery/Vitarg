@@ -57,6 +57,12 @@ def fetch_linux_tools(tools_dir: Path, tmp_dir: Path) -> None:
     lic_dir = tools_dir / "licenses"
     lic_dir.mkdir(parents=True, exist_ok=True)
 
+    # Strictly purge any Windows binaries from tools_dir when targeting Linux
+    for item in tools_dir.iterdir():
+        if item.is_file() and item.suffix.lower() in (".exe", ".bat", ".cmd"):
+            item.unlink(missing_ok=True)
+            log(f"Removed Windows artifact: {item.name}")
+
     ffmpeg_bin = tools_dir / "ffmpeg"
     ffprobe_bin = tools_dir / "ffprobe"
     pandoc_bin = tools_dir / "pandoc"
