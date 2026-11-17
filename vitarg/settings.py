@@ -158,6 +158,54 @@ class Settings:
         self.__dict__.update(Settings().__dict__)
 
 
+def _get_linux_shell_cmd() -> str:
+    """Return safely quoted shell command string for invoking Vitarg in shell scripts."""
+    import shlex
+    if getattr(sys, "frozen", False):
+        return shlex.quote(sys.executable)
+    app_root = Path(__file__).resolve().parent.parent
+    run_script = app_root / "run_vitarg.py"
+    if run_script.exists():
+        return f"{shlex.quote(sys.executable)} {shlex.quote(str(run_script))}"
+    return f"{shlex.quote(sys.executable)} -m vitarg"
+
+
+def _get_linux_desktop_exec(extra_args: str = "") -> str:
+    """Return safely escaped Exec string conforming to the freedesktop .desktop specification."""
+    if getattr(sys, "frozen", False):
+        tokens = [sys.executable]
+    else:
+        app_root = Path(__file__).resolve().parent.parent
+        run_script = app_root / "run_vitarg.py"
+        if run_script.exists():
+            tokens = [sys.executable, str(run_script)]
+        else:
+            tokens = [sys.executable, "-m", "vitarg"]
+
+    escaped_tokens = []
+    for tok in tokens:
+        # According to the Freedesktop Desktop Entry Specification, double-quote arguments
+        # with spaces and escape \, ", $, and ` with a backslash.
+        esc = tok.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+        if any(c in esc for c in " \t\n\"'()[]{}*?~<>|;&=$`"):
+            escaped_tokens.append(f'"{esc}"')
+        else:
+            escaped_tokens.append(esc)
+
+    cmd = " ".join(escaped_tokens)
+    if extra_args:
+        cmd = f"{cmd} {extra_args}"
+    return cmd
+
+
+def _get_linux_icon_str() -> str:
+    app_root = Path(__file__).resolve().parent.parent
+    icon_p = app_root / "assets" / "vitarg.png"
+    if icon_p.exists():
+        return str(icon_p)
+    return "vitarg"
+
+
 def set_launch_at_login(enabled: bool) -> None:
     if sys.platform == "win32":
         import winreg
@@ -180,14 +228,15 @@ def set_launch_at_login(enabled: bool) -> None:
         desktop_file = autostart_dir / "vitarg.desktop"
         if enabled:
             autostart_dir.mkdir(parents=True, exist_ok=True)
-            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            exec_cmd = _get_linux_desktop_exec()
+            icon_arg = _get_linux_icon_str()
             content = (
                 "[Desktop Entry]\n"
                 "Type=Application\n"
                 "Name=Vitarg\n"
                 "Comment=Vitarg File Converter & Toolkit\n"
-                f"Exec={exe}\n"
-                "Icon=vitarg\n"
+                f"Exec={exec_cmd}\n"
+                f"Icon={icon_arg}\n"
                 "Terminal=false\n"
                 "Categories=Utility;\n"
                 "X-GNOME-Autostart-enabled=true\n"
@@ -225,14 +274,15 @@ def create_desktop_shortcut() -> bool:
             return False
     elif sys.platform.startswith("linux"):
         try:
-            exe = sys.executable if getattr(sys, "frozen", False) else f"{sys.executable} -m vitarg"
+            exec_cmd = _get_linux_desktop_exec()
+            icon_arg = _get_linux_icon_str()
             content = (
                 "[Desktop Entry]\n"
                 "Type=Application\n"
                 "Name=Vitarg\n"
                 "Comment=Vitarg File Converter & Toolkit\n"
-                f"Exec={exe}\n"
-                "Icon=vitarg\n"
+                f"Exec={exec_cmd}\n"
+                f"Icon={icon_arg}\n"
                 "Terminal=false\n"
                 "Categories=Utility;\n"
             )
@@ -301,38 +351,87 @@ def set_context_menu(enabled: bool) -> bool:
             return False
     elif sys.platform.startswith("linux"):
         try:
-            exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m vitarg'
-            nautilus_dir = Path.home() / ".local" / "share" / "nautilus" / "scripts"
-            kde_dir = Path.home() / ".local" / "share" / "kio" / "servicemenus"
-            script_path = nautilus_dir / "Convert with Vitarg"
-            kde_path = kde_dir / "vitarg.desktop"
+            shell_cmd = _get_linux_shell_cmd()
+            desktop_exec = _get_linux_desktop_exec("%F")
+            icon_arg = _get_linux_icon_str()
+
+            script_dirs = [
+                Path.home() / ".local" / "share" / "nautilus" / "scripts",
+                Path.home() / ".local" / "share" / "nemo" / "scripts",
+                Path.home() / ".config" / "caja" / "scripts",
+            ]
+            kde_dirs = [
+                Path.home() / ".local" / "share" / "kio" / "servicemenus",
+                Path.home() / ".local" / "share" / "kservices5" / "ServiceMenus",
+            ]
+
+            script_content = (
+                "#!/bin/bash\n"
+                "# Vitarg File Manager Action\n"
+                "files=()\n"
+                'if [ "$#" -gt 0 ]; then\n'
+                '    for f in "$@"; do\n'
+                '        [ -e "$f" ] && files+=("$f")\n'
+                "    done\n"
+                "fi\n"
+                'if [ "${#files[@]}" -eq 0 ] && [ -n "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS" ]; then\n'
+                "    while IFS= read -r f; do\n"
+                '        [ -n "$f" ] && [ -e "$f" ] && files+=("$f")\n'
+                '    done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"\n'
+                "fi\n"
+                "\n"
+                f'exec {shell_cmd} "${{files[@]}}"\n'
+            )
+
+            kde_content = (
+                "[Desktop Entry]\n"
+                "Type=Service\n"
+                "ServiceTypes=KonqPopupMenu/Plugin\n"
+                "MimeType=all/allfiles;\n"
+                "Actions=VitargConvert;\n"
+                "\n"
+                "[Desktop Action VitargConvert]\n"
+                "Name=Convert with Vitarg\n"
+                f"Icon={icon_arg}\n"
+                f"Exec={desktop_exec}\n"
+            )
+
             if enabled:
-                nautilus_dir.mkdir(parents=True, exist_ok=True)
-                script_path.write_text(f'#!/bin/bash\n{exe} "$@"\n', encoding="utf-8")
-                try:
-                    script_path.chmod(0o755)
-                except OSError:
-                    pass
-                kde_dir.mkdir(parents=True, exist_ok=True)
-                kde_content = (
-                    "[Desktop Entry]\n"
-                    "Type=Service\n"
-                    "ServiceTypes=KonqPopupMenu/Plugin\n"
-                    "MimeType=all/allfiles;\n"
-                    "Actions=VitargConvert;\n"
-                    "\n"
-                    "[Desktop Action VitargConvert]\n"
-                    "Name=Convert with Vitarg\n"
-                    "Icon=vitarg\n"
-                    f"Exec={exe} %F\n"
-                )
-                kde_path.write_text(kde_content, encoding="utf-8")
+                for sdir in script_dirs:
+                    try:
+                        sdir.mkdir(parents=True, exist_ok=True)
+                        spath = sdir / "Convert with Vitarg"
+                        spath.write_text(script_content, encoding="utf-8")
+                        try:
+                            spath.chmod(0o755)
+                        except OSError:
+                            pass
+                    except Exception:
+                        pass
+
+                for kdir in kde_dirs:
+                    try:
+                        kdir.mkdir(parents=True, exist_ok=True)
+                        kpath = kdir / "vitarg.desktop"
+                        kpath.write_text(kde_content, encoding="utf-8")
+                    except Exception:
+                        pass
                 return True
             else:
-                if script_path.exists():
-                    script_path.unlink()
-                if kde_path.exists():
-                    kde_path.unlink()
+                for sdir in script_dirs:
+                    spath = sdir / "Convert with Vitarg"
+                    if spath.exists():
+                        try:
+                            spath.unlink()
+                        except OSError:
+                            pass
+                for kdir in kde_dirs:
+                    kpath = kdir / "vitarg.desktop"
+                    if kpath.exists():
+                        try:
+                            kpath.unlink()
+                        except OSError:
+                            pass
                 return True
         except Exception:
             return False

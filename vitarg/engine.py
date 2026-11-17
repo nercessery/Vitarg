@@ -290,6 +290,12 @@ def apply_cpu_throttling(p: subprocess.Popen, mode: Optional[str] = None) -> Non
                 os.sched_setaffinity(p.pid, set(cores))
         except Exception:
             pass
+        try:
+            if hasattr(os, "setpriority"):
+                nice = 10 if m == "eco" else 0
+                os.setpriority(os.PRIO_PROCESS, p.pid, nice)
+        except Exception:
+            pass
 
 
 def kill_active_processes() -> None:
