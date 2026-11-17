@@ -224,7 +224,7 @@ class Wheel(QWidget):
         # Window flags are permanent and stable; toggle WA_ShowWithoutActivating without HWND recreation
         self.setAttribute(Qt.WA_ShowWithoutActivating, not interactive)
 
-        if not self.isVisible():
+        if not self.isVisible() or self.windowOpacity() < 0.95:
             self.setWindowOpacity(0.0)
             self.show()
             self.fade.stop(); self.fade.setStartValue(0.0); self.fade.setEndValue(1.0); self.fade.start()
@@ -257,12 +257,18 @@ class Wheel(QWidget):
                 app.removeEventFilter(self)
             except Exception:
                 pass
-        if self.isVisible():
-            self.fade.stop()
-            self.pop.stop()
-            self.hide()
+        self.fade.stop()
+        self.pop.stop()
+        self.setWindowOpacity(0.0)
+        self.hide()
         self.hover = -1
         self._was_activated = False
+        if sys.platform == "win32":
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
 
     def eventFilter(self, watched, event):
         if getattr(self, "interactive", False) and self.isVisible():
@@ -284,6 +290,21 @@ class Wheel(QWidget):
         if keys.key_down(0x1B):
             self.dismiss()
             return
+
+        # Dismiss if focus switches away to another application
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                my_hwnd = int(self.winId())
+                if fg_hwnd != 0 and fg_hwnd != my_hwnd and (time.monotonic() - getattr(self, "_shown_time", 0) > 0.5):
+                    app = QApplication.instance()
+                    active_w = app.activeWindow() if app else None
+                    if not active_w or active_w is self:
+                        self.dismiss()
+                        return
+            except Exception:
+                pass
 
         lbutton = keys.primary_button_down()
         rbutton = keys.key_down(0x02)
@@ -307,6 +328,8 @@ class Wheel(QWidget):
 
     # Mouse & Keyboard interaction (interactive click & dismiss) --------
     def mouseMoveEvent(self, e):
+        if not self.isVisible() or (self.windowOpacity() <= 0.05 and self.fade.state() != QPropertyAnimation.Running):
+            return
         self._set_hover(self._hit(e.position()))
 
     def leaveEvent(self, e):
@@ -346,6 +369,12 @@ class Wheel(QWidget):
 
     def hideEvent(self, e):
         self.hover = -1
+        if sys.platform == "win32":
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
         super().hideEvent(e)
 
     # OLE drag & drop -------------------------------------------------
@@ -367,6 +396,9 @@ class Wheel(QWidget):
         return -1
 
     def _set_hover(self, i: int):
+        if not self.isVisible() or (self.windowOpacity() <= 0.05 and self.fade.state() != QPropertyAnimation.Running):
+            self.hover = -1
+            return
         if i != self.hover:
             self.hover = i
             if i >= 0 and self.settings.sound:

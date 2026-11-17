@@ -151,7 +151,7 @@ class DragMonitor(QObject):
                     self.timer.setInterval(16)          # 60 FPS only during genuine Explorer drag
                 threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
             return
-        if not self.armed:
+        if not self.armed and self.shown is None:
             return
         if self.timer.interval() != 16:
             self.timer.setInterval(16)                  # maintain 60 FPS while dragging in Explorer
@@ -163,7 +163,12 @@ class DragMonitor(QObject):
         uni = keys.universe_for(s.conv_trigger, s.tools_trigger)
         pressed = keys.pressed_set(uni)
         kind = "conv" if keys.matches(pressed, s.conv_trigger) else "tools" if keys.matches(pressed, s.tools_trigger) else None
-        if kind is None or kind == self.shown:
+        if kind is None:
+            if self.shown is not None:
+                self.cancelled.emit()
+                self.shown = None
+            return
+        if kind == self.shown:
             return
         x, y = keys.cursor_pos()
         moved = max(abs(x - self.origin[0]), abs(y - self.origin[1]))

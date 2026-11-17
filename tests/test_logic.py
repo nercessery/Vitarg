@@ -669,6 +669,69 @@ class V103FeatureTests(unittest.TestCase):
         self.assertEqual(engine.get_cpu_mode(), "eco")
         win.close_and_release()
 
+    def test_wheel_hidden_and_transparent_no_hover_sound(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt, QPointF, QEvent
+            from PySide6.QtGui import QMouseEvent
+            from vitarg.settings import Settings
+            from vitarg.wheel import Wheel
+        except ImportError:
+            return
+
+        app = QApplication.instance() or QApplication([])
+        s = Settings()
+        wheel = Wheel(s)
+
+        # 1. When dismissed/hidden, _set_hover and mouseMoveEvent MUST NOT trigger hover or sound
+        wheel.dismiss()
+        self.assertFalse(wheel.isVisible())
+        self.assertEqual(wheel.hover, -1)
+        self.assertEqual(wheel.windowOpacity(), 0.0)
+
+        # Attempt to set hover on hidden wheel
+        wheel._set_hover(2)
+        self.assertEqual(wheel.hover, -1, "Hover should stay -1 when wheel is hidden")
+
+        m_move = QMouseEvent(QEvent.MouseMove, QPointF(220, 80), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+        app.sendEvent(wheel, m_move)
+        self.assertEqual(wheel.hover, -1, "MouseMoveEvent must not hover when wheel is hidden")
+
+        # 2. When opacity is <= 0.05 and not animating, hover must also be ignored
+        wheel.show()
+        wheel.setWindowOpacity(0.0)
+        wheel.fade.stop()
+        wheel._set_hover(3)
+        self.assertEqual(wheel.hover, -1, "Hover should stay -1 when wheel opacity is 0.0")
+
+        app.sendEvent(wheel, m_move)
+        self.assertEqual(wheel.hover, -1, "MouseMoveEvent must not hover when wheel opacity is 0.0")
+
+        wheel.dismiss()
+
+    def test_drag_monitor_cancel_on_modifier_release(self):
+        from vitarg.settings import Settings
+        from vitarg.monitor import DragMonitor
+        s = Settings()
+        dm = DragMonitor(s)
+        dm.shown = "conv"
+        cancelled_called = []
+        dm.cancelled.connect(lambda: cancelled_called.append(True))
+
+        # Mock keys: primary button down, but universe has no keys pressed (user released modifiers)
+        import vitarg.keys as vkeys
+        orig_down = vkeys.primary_button_down
+        orig_pressed = vkeys.pressed_set
+        try:
+            vkeys.primary_button_down = lambda: True
+            vkeys.pressed_set = lambda u: set()
+            dm._tick()
+            self.assertEqual(len(cancelled_called), 1)
+            self.assertIsNone(dm.shown)
+        finally:
+            vkeys.primary_button_down = orig_down
+            vkeys.pressed_set = orig_pressed
+
 
 if __name__ == "__main__":
     unittest.main()
