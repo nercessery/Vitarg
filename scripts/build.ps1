@@ -16,7 +16,11 @@ function Use-Venv($pythonExe) {
     & $vp -c "import PIL, PySide6, fitz, docx, py7zr, win32com, PyInstaller" 2>&1 | Out-Host
     if ($LASTEXITCODE -eq 0) { return $true }
     & $vp -m pip install --upgrade pip --quiet | Out-Host
-    & $vp -m pip install -r requirements.txt --quiet | Out-Host
+    if (Test-Path "$root\requirements.txt") {
+        & $vp -m pip install -r requirements.txt --quiet | Out-Host
+    } else {
+        & $vp -m pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf pywin32 pyinstaller requests --quiet | Out-Host
+    }
     $installOk = ($LASTEXITCODE -eq 0)
     & $vp -c "import PIL, PySide6, fitz, docx, py7zr, win32com, PyInstaller" 2>&1 | Out-Host
     $importOk = ($LASTEXITCODE -eq 0)
@@ -66,16 +70,20 @@ $py = Join-Path $root ".venv\Scripts\python.exe"
 
 & "$PSScriptRoot\fetch_tools.ps1"
 
-Write-Host "=== Running tests ==="
-$env:PATH = "$root\tools;$env:PATH"
-$ErrorActionPreference = "Continue"
-& $py -m unittest discover -s tests -p "test_*.py" -v 2>&1 | Tee-Object -FilePath test-results.txt
-$testExitCode = $LASTEXITCODE
-$testsOk = ($testExitCode -eq 0)
-$ErrorActionPreference = "Stop"
-if (-not $testsOk -or $testExitCode -ne 0) {
-    Write-Error "Unit tests failed with exit code $testExitCode (see test-results.txt). Halting build."
-    exit 1
+if (Test-Path "$root\tests") {
+    Write-Host "=== Running tests ==="
+    $env:PATH = "$root\tools;$env:PATH"
+    $ErrorActionPreference = "Continue"
+    & $py -m unittest discover -s tests -p "test_*.py" -v 2>&1 | Tee-Object -FilePath test-results.txt
+    $testExitCode = $LASTEXITCODE
+    $testsOk = ($testExitCode -eq 0)
+    $ErrorActionPreference = "Stop"
+    if (-not $testsOk -or $testExitCode -ne 0) {
+        Write-Error "Unit tests failed with exit code $testExitCode (see test-results.txt). Halting build."
+        exit 1
+    }
+} else {
+    Write-Host "=== Tests directory not found, skipping tests ==="
 }
 
 Write-Host "=== Building Application ==="

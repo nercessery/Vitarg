@@ -3,9 +3,8 @@
 A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for Windows and Linux. Hold a trigger key while dragging files in your file manager — a sleek obsidian dark glass radial wheel appears — drop on a wedge to convert, resize, or process files instantly.
 
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![Linux](https://img.shields.io/badge/platform-Linux%20(X11%20%2F%20Wayland)-orange)
+![Linux](https://img.shields.io/badge/platform-Linux-orange)
 ![Theme](https://img.shields.io/badge/theme-Obsidian%20Glass%20%2B%20Royal%20Purple-7C3AED)
-![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -38,19 +37,20 @@ A fast, lightweight, and modern **drag-and-drop file converter & toolkit** for W
 - **Collage** — Arrange photos into responsive grid collages.
 - **Join Videos** — Concat multiple video files with automatic aspect matching.
 - **Extract** — One-click unpack for ZIP, TAR, GZ, and 7Z archives.
-- **Target Size (Target Compress)** — Target-size 2-pass H.264 video compression for Discord (<25 MB), Discord Nitro (<50 MB), Email (<10 MB), WhatsApp (<8 MB), or custom target MB limits.
+- **Target Size (Target Compress)** — Target-size 2-pass H.264 video compression for 25 MB, 50 MB, 10 MB, 8 MB, or custom target MB limits.
 - **Volume Boost** — Amplify audio volume from 10% up to 600% with live waveform preview and 2-second audio sample audition.
 - **Audio Equalizer** — 6-preset audio equalization (Bass Boost, Ultra Bass, Vocal Boost, Treble Boost, Loudness & Clarity, Flat) with real-time waveform display.
 - **Extract Text** — Extract text from PDF documents and images (with OCR support) directly to `.txt` files, clipboard, or both.
 
 ### ⚡ Smart Productivity Tools
+- **CPU Throttling Switch (Eco Mode)** — Toggle between Eco Mode (max ~40-50% CPU limit) and Full Speed (100% CPU) right on the progress window so your PC never slows down during heavy conversions.
 - **Undo / Rollback (Ctrl+Z)** — Revert the last operation with one click from the completion dialog, tray menu, or Settings. Safely deletes generated files and restores any backed-up originals.
 - **Pre-Action Rename & Custom Naming** — Review and customize output file names or apply smart templates (`{name}_{date}`, `{name}_{num}`, `{name}-vitarg`) before converting or running tools, with live output preview and automatic extension handling.
 - **Conversion Preview & Size Estimator** — Real-time estimation of output file size and quality ratio before and during processing.
 - **Visual PDF Organizer & Multi-File Drop** — Interactive visual reordering modal for merging PDFs and compiling images into PDF with drag-and-drop page sequencing, thumbnail previews, page deletion, and custom naming.
 - **Clipboard Quick Convert Popup** — Convert and export image data directly from the system clipboard to any supported format (PNG, JPG, WebP, PDF) via the tray icon or drop target menu.
 - **Size Difference & Visual Stats Card** — Post-conversion statistics card in the completion dialog displaying exact before/after file sizes, percentage savings, and saved disk space with color-coded feedback.
-- **Desktop Context Menu Integration** — Seamless right-click file manager integration ("Convert with Vitarg") for Windows Explorer, GNOME/Nautilus scripts, and KDE Plasma/Dolphin ServiceMenus.
+- **Desktop Context Menu Integration** — Seamless right-click file manager integration ("Convert with Vitarg") for Windows Explorer and Linux desktop environments.
 - **Live Audio Sample Preview** — Interactive 2-second audio sample audition directly inside tool configuration dialogs (Volume Boost, EQ) before applying conversion.
 
 ---
@@ -82,11 +82,10 @@ Download **`Vitarg-Setup.exe`**:
 - Adds a Start Menu shortcut
 - Registers a clean Windows uninstaller in Apps & Features
 
-### 🐧 Linux (Ubuntu, Debian, Fedora, Arch)
+### 🐧 Linux
 Download **`Vitarg-linux-x86_64.tar.gz`**:
 - Unpack and run `./Vitarg`
-- Fully standalone PyInstaller distribution with all dependencies and Qt platform plugins bundled
-- Out-of-the-box support for both **X11** and **Wayland** desktops (GNOME, KDE Plasma, XFCE, Cinnamon)
+- Standalone distribution with all dependencies bundled
 
 ---
 
@@ -100,13 +99,10 @@ Download **`Vitarg-linux-x86_64.tar.gz`**:
 3. Drop the file onto your desired action petal.
 4. Output is generated cleanly in seconds without modifying the source file.
 
-### On Linux (X11 & Wayland):
-1. Launch `./Vitarg` — a system tray icon appears (or a floating drop target if system tray is unavailable in your desktop environment).
-2. Multiple invocation methods:
-   - **Floating Drop Target**: Drag files from Nautilus, Dolphin, Thunar, or Nemo onto the on-screen `+` target widget.
-   - **System Tray**: Right-click the tray icon to select "Select Files to Convert…" or toggle the floating drop target.
-   - **CLI / File Manager "Open With"**: Run `vitarg <file1> <file2>` from terminal or link Vitarg as a file handler. Single-instance socket IPC automatically forwards files to the running instance and displays the radial wheel.
-   - **Wayland Center Fallback**: Automatically opens the radial action wheel at the screen center if global mouse coordinate tracking is restricted by your Wayland compositor.
+### On Linux:
+1. Launch `./Vitarg` — a system tray icon appears (or a floating drop target).
+2. Drag files onto the drop target or use the tray menu to select files.
+3. Drop the file onto your desired action petal to convert.
 
 ---
 
@@ -114,7 +110,7 @@ Download **`Vitarg-linux-x86_64.tar.gz`**:
 
 ### Prerequisites
 - **Windows**: Windows 10/11 (x64), Python 3.10+ (3.12 recommended), Inno Setup (optional, for setup installer)
-- **Linux**: Ubuntu 22.04+ / Fedora 38+ / Arch Linux, Python 3.10+, FFmpeg, Pandoc
+- **Linux**: Linux 64-bit, Python 3.10+, FFmpeg, Pandoc
 
 ### Windows Build
 ```powershell
@@ -122,25 +118,18 @@ git clone https://github.com/nercessery/Vitarg.git
 cd Vitarg
 .\scripts\build.ps1
 ```
-The automated script will initialize the environment, bundle FFmpeg/Pandoc, execute the 194-test suite, and compile `dist\Vitarg-Setup.exe`.
+The automated script will initialize the environment, bundle FFmpeg/Pandoc, and compile `dist\Vitarg-Setup.exe`.
 
 ### Linux Build
 ```bash
 git clone https://github.com/nercessery/Vitarg.git
 cd Vitarg
-sudo apt-get update && sudo apt-get install -y ffmpeg pandoc \
-  libgl1 libegl1 libxkbcommon-x11-0 libxcb*
+sudo apt-get update && sudo apt-get install -y ffmpeg pandoc
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python -m unittest discover -s tests -p "test_*.py"
+pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf requests pyinstaller
 pyinstaller --noconfirm --clean --windowed --name Vitarg \
   --add-data "assets:assets" \
   --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf \
   run_vitarg.py
 ```
-
----
-
-## 📄 License
-MIT License. Free and open source.

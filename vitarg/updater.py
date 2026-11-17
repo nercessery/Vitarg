@@ -9,7 +9,7 @@ import urllib.error
 from . import engine
 
 GITHUB_REPOS = ["nercessery/Vitarg"]
-USER_AGENT = "Vitarg-App/1.0.3.2"
+USER_AGENT = "Vitarg-App/1.0.5"
 
 try:
     from PySide6.QtCore import Qt, QThread, Signal, QTimer
@@ -57,7 +57,7 @@ def compute_file_sha256(path: Path) -> str:
         return ""
 
 
-def generate_manifest(app_root: Path, version: str = "1.0.3.2") -> dict:
+def generate_manifest(app_root: Path, version: str = "1.0.5") -> dict:
     """Generate a manifest mapping relative file paths to their size and SHA-256 hash."""
     app_root = Path(app_root).resolve()
     manifest = {
