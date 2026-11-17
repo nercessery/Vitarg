@@ -142,32 +142,22 @@ class JobWindow(Panel):
         if not custom_name:
             self.rename_container.hide()
 
-        # 3. CPU Throttling Mode Selector (User requested ~40-50% CPU limit to keep PC & games fast)
+        # 3. CPU Mode Status Text (User requested: clean text badge, no selector buttons)
         self.cpu_container = QWidget()
         cpu_lay = QHBoxLayout(self.cpu_container)
-        cpu_lay.setContentsMargins(0, 4, 0, 4)
+        cpu_lay.setContentsMargins(0, 2, 0, 4)
         cpu_lay.setSpacing(6)
 
-        cpu_lbl = QLabel("CPU Limit:")
-        cpu_lbl.setStyleSheet("color: #9CA3AF; font-size: 11px; font-weight: bold;")
-        cpu_lay.addWidget(cpu_lbl)
-
-        self.btn_cpu_eco = QPushButton("🍃 Low CPU (~40%)")
-        self.btn_cpu_eco.setToolTip("Limits CPU to ~40-50% so gaming and other PC tasks stay smooth without lag")
-        self.btn_cpu_full = QPushButton("⚡ Full Speed (100%)")
-        self.btn_cpu_full.setToolTip("Uses 100% CPU to finish conversion as fast as possible")
-
-        self.btn_cpu_eco.setFixedHeight(26)
-        self.btn_cpu_full.setFixedHeight(26)
-
-        self.btn_cpu_eco.clicked.connect(lambda: self._set_cpu_mode("eco"))
-        self.btn_cpu_full.clicked.connect(lambda: self._set_cpu_mode("full"))
-
-        cpu_lay.addWidget(self.btn_cpu_eco)
-        cpu_lay.addWidget(self.btn_cpu_full)
+        mode = engine.get_cpu_mode()
+        badge_text = "🍃 CPU: Eco Modu" if mode == "eco" else "⚡ CPU: Standart Mod"
+        self.cpu_lbl = QLabel(badge_text)
+        self.cpu_lbl.setStyleSheet(
+            "color: #C4B5FD; background: rgba(124, 58, 237, 0.2); border: 1px solid rgba(139, 92, 246, 0.35); "
+            "border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 500;"
+        )
+        cpu_lay.addWidget(self.cpu_lbl)
         cpu_lay.addStretch(1)
         self.body.addWidget(self.cpu_container)
-        self._update_cpu_buttons(engine.get_cpu_mode())
 
         # Worker initialization
         self.err = None
@@ -182,23 +172,10 @@ class JobWindow(Panel):
 
     def _set_cpu_mode(self, mode: str):
         engine.set_cpu_mode(mode)
-        self._update_cpu_buttons(mode)
-
-    def _update_cpu_buttons(self, mode: str):
-        active_style = (
-            "background: rgba(124, 58, 237, 0.45); border: 1.5px solid #8B5CF6; "
-            "color: #FFFFFF; font-weight: bold; border-radius: 6px; padding: 2px 10px; font-size: 11px;"
-        )
-        inactive_style = (
-            "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.15); "
-            "color: #9CA3AF; font-weight: normal; border-radius: 6px; padding: 2px 10px; font-size: 11px;"
-        )
-        if mode == "eco":
-            self.btn_cpu_eco.setStyleSheet(active_style)
-            self.btn_cpu_full.setStyleSheet(inactive_style)
-        else:
-            self.btn_cpu_eco.setStyleSheet(inactive_style)
-            self.btn_cpu_full.setStyleSheet(active_style)
+        mode_now = engine.get_cpu_mode()
+        badge_text = "🍃 CPU: Eco Modu" if mode_now == "eco" else "⚡ CPU: Standart Mod"
+        if hasattr(self, "cpu_lbl"):
+            self.cpu_lbl.setText(badge_text)
 
     def _done(self, outs, errs):
         if hasattr(self, "cpu_container"):

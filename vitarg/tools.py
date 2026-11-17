@@ -393,8 +393,10 @@ def compress_media(src: Path, ws: Workspace, p: dict, progress, cancel) -> Path:
     out = _out(ws, src, "Compressed")
     if family(fmt) == "video":
         vf = ["-vf", "scale=-2:'min(1080,ih)'"] if strong else ["-vf", engine.EVEN]
-        args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "medium",
-                "-crf", "30" if strong else "26", "-pix_fmt", "yuv420p", *vf, "-c:a", "aac", "-b:a", "128k"]
+        args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "fast",
+                "-crf", "30" if strong else "26", "-pix_fmt", "yuv420p", *vf,
+                "-x264-params", "rc-lookahead=20:sync-lookahead=4:mbtree=1", "-max_muxing_queue_size", "1024",
+                "-c:a", "aac", "-b:a", "128k"]
         if fmt in ("mp4", "mov", "m4v"):
             args += ["-movflags", "+faststart"]
         if fmt in ("avi", "webm", "wmv", "flv"):
@@ -741,11 +743,17 @@ def target_compress_video(src: Path, ws: Workspace, params: dict, progress, canc
     log_prefix = ws.path("_ff2pass")
     pass1_args = [
         "-i", str(src), "-c:v", "libx264", "-b:v", f"{v_bitrate_k}k",
+        "-preset", "fast", "-maxrate", f"{int(v_bitrate_k * 1.5)}k", "-bufsize", f"{2 * v_bitrate_k}k",
+        "-x264-params", "rc-lookahead=15:sync-lookahead=4:mbtree=1",
+        "-max_muxing_queue_size", "1024",
         "-pass", "1", "-passlogfile", str(log_prefix), "-an", "-f", "null",
         ("NUL" if sys.platform == "win32" else "/dev/null")
     ]
     pass2_args = [
         "-i", str(src), "-c:v", "libx264", "-b:v", f"{v_bitrate_k}k",
+        "-preset", "fast", "-maxrate", f"{int(v_bitrate_k * 1.5)}k", "-bufsize", f"{2 * v_bitrate_k}k",
+        "-x264-params", "rc-lookahead=15:sync-lookahead=4:mbtree=1",
+        "-max_muxing_queue_size", "1024",
         "-pass", "2", "-passlogfile", str(log_prefix),
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-pix_fmt", "yuv420p"
@@ -1120,8 +1128,10 @@ def waveform_image(src, w: int = 500, h: int = 120):
     from PIL import Image
     fd, out = tempfile.mkstemp(suffix=".png"); os.close(fd)
     try:
-        subprocess.run([need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-i", str(src), "-filter_complex",
-                        f"aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=white", "-frames:v", "1", out],
+        subprocess.run([need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-vn", "-threads", "2",
+                        "-i", str(src), "-filter_complex",
+                        f"aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=white", "-max_muxing_queue_size", "1024",
+                        "-frames:v", "1", out],
                        capture_output=True, creationflags=engine.NOWIN)
         if not os.path.exists(out) or os.path.getsize(out) == 0:
             raise ConversionError("Could not draw the waveform.")

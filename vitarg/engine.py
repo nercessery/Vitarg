@@ -299,15 +299,31 @@ def apply_cpu_throttling(p: subprocess.Popen, mode: Optional[str] = None) -> Non
 def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
                cancel: Optional[threading.Event] = None) -> None:
     mode = get_cpu_mode()
-    thread_args = []
-    if "-threads" not in args:
-        total_cores = os.cpu_count() or 4
-        if mode == "eco":
-            eco_threads = max(1, int(total_cores * 0.45))
-            thread_args = ["-threads", str(eco_threads)]
+    total_cores = os.cpu_count() or 4
+    if mode == "eco":
+        eco_threads = max(1, min(4, int(total_cores * 0.45)))
+    else:
+        eco_threads = max(1, total_cores)
+
+    cleaned_args = list(args)
+
+    # 1. Output/Encoder optimizations: cap encoder threads, bound muxer queue, limit lookahead frames
+    out_opts = []
+    if "-threads" not in cleaned_args:
+        out_opts.extend(["-threads", str(eco_threads)])
+    if "-max_muxing_queue_size" not in cleaned_args:
+        out_opts.extend(["-max_muxing_queue_size", "1024"])
+    if "libx264" in cleaned_args and "-x264-params" not in cleaned_args:
+        out_opts.extend(["-x264-params", "rc-lookahead=20:sync-lookahead=4:mbtree=1"])
+
+    if out_opts and len(cleaned_args) >= 1:
+        cleaned_args = cleaned_args[:-1] + out_opts + [cleaned_args[-1]]
+
+    # 2. Input/Decoder optimizations: decoder threads before -i
+    in_opts = ["-threads", str(eco_threads)]
 
     cmd = [need_tool("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
-           *thread_args, "-progress", "pipe:1", "-nostats", *args]
+           *in_opts, "-progress", "pipe:1", "-nostats", *cleaned_args]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          encoding="utf-8", errors="replace", creationflags=NOWIN)
     apply_cpu_throttling(p, mode)
@@ -364,7 +380,10 @@ EVEN = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 
 def _video_args(target: str, crf: int) -> list[str]:
-    x264 = ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p", "-vf", EVEN]
+    x264 = [
+        "-c:v", "libx264", "-preset", "fast", "-crf", str(crf), "-pix_fmt", "yuv420p", "-vf", EVEN,
+        "-x264-params", "rc-lookahead=20:sync-lookahead=4:mbtree=1", "-max_muxing_queue_size", "1024"
+    ]
     if target in ("mp4", "mov"):
         return x264 + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
     if target == "mkv":
@@ -449,8 +468,34 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel,
     elif target == "gif":
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
-        vf = "fps=15,scale='min(960,iw)':-2:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse"
-        args = ["-i", str(src), "-an", "-vf", vf, "-loop", "0", str(out)]
+        # Two-pass palette generation: avoids buffering all uncompressed frames in memory!
+        # Single-pass split[a][b];[a]palettegen[p];[b][p]paletteuse causes FFmpeg to buffer gigabytes of raw frames in RAM.
+        fd, pal_tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        pal_path = Path(pal_tmp)
+        try:
+            fps_val = int(params.get("fps", 15)) if params else 15
+            scale_f = f"fps={fps_val},scale=min(720\\,iw):-2:flags=lanczos"
+            p1_args = ["-i", str(src), "-an", "-vf", f"{scale_f},palettegen=stats_mode=diff", str(pal_path)]
+            def p1_prog(p: float) -> None:
+                progress(p * 0.3)
+            run_ffmpeg(p1_args, info["duration"], p1_prog, cancel)
+
+            if cancel and cancel.is_set():
+                raise Cancelled()
+
+            p2_lavfi = f"[0:v]{scale_f}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+            p2_args = ["-i", str(src), "-i", str(pal_path), "-lavfi", p2_lavfi, "-loop", "0", str(out)]
+            def p2_prog(p: float) -> None:
+                progress(30.0 + p * 0.7)
+            run_ffmpeg(p2_args, info["duration"], p2_prog, cancel)
+        finally:
+            try:
+                if pal_path.exists():
+                    pal_path.unlink()
+            except Exception:
+                pass
+        args = None
     else:
         if not info["video"]:
             raise ConversionError("The source has no video stream.")
@@ -475,13 +520,14 @@ def convert_media(src: Path, target: str, out: Path, settings, progress, cancel,
             args = ["-i", str(src), "-map", "0:v:0", "-an", *clean_v, str(out)]
         else:
             args = ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", *af_args, *v_args, str(out)]
-    run_ffmpeg(args, info["duration"], progress, cancel)
+    if args is not None:
+        run_ffmpeg(args, info["duration"], progress, cancel)
     chk = probe(out)
     if target in AUDIO_OUT and not chk["audio"]:
         raise ConversionError("Validation failed: output has no audio stream.")
     if target not in AUDIO_OUT and not chk["video"]:
         raise ConversionError("Validation failed: output has no video stream.")
-    if info["duration"] > 3 and sf != "gif" and chk["duration"] and abs(chk["duration"] - info["duration"]) > max(2, info["duration"] * 0.05):
+    if info["duration"] > 3 and sf != "gif" and target != "gif" and chk["duration"] and abs(chk["duration"] - info["duration"]) > max(2, info["duration"] * 0.05):
         raise ConversionError(f"Validation failed: output duration {chk['duration']:.1f}s differs from source {info['duration']:.1f}s.")
 
 

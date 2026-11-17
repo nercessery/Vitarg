@@ -115,10 +115,13 @@ class SettingsDialog(Panel):
             sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(v); return sp
         self.jq, self.wq, self.crf, self.abr = spin(30, 100, settings.jpg_quality), spin(30, 100, settings.webp_quality), spin(0, 40, settings.video_crf), spin(64, 320, settings.audio_bitrate_k)
         self.preset = QComboBox(); self.preset.addItems(["Balanced", "Strong"]); self.preset.setCurrentText(settings.compress_preset)
+        self.cpu_mode = QComboBox(); self.cpu_mode.addItems(["Eco Modu (Sakin / Düşük Kaynak)", "Standart Mod"])
+        self.cpu_mode.setCurrentIndex(0 if getattr(settings, "cpu_mode", "eco") == "eco" else 1)
         for i, (lab, w) in enumerate((("JPG quality", self.jq), ("WebP quality", self.wq), ("Video quality (CRF, lower = better)", self.crf),
-                                       ("AAC audio bitrate (kbps)", self.abr), ("Default compression preset", self.preset))):
+                                       ("AAC audio bitrate (kbps)", self.abr), ("Default compression preset", self.preset),
+                                       ("CPU throttling mode", self.cpu_mode))):
             fl.addWidget(QLabel(lab), i, 0); fl.addWidget(w, i, 1)
-        fl.setRowStretch(5, 1)
+        fl.setRowStretch(6, 1)
         tabs.addTab(f, "Formats")
         # ---------------- general
         g = QWidget(); gl = QVBoxLayout(g)
@@ -324,6 +327,7 @@ class SettingsDialog(Panel):
         self.r_src.setChecked(True); self.folder.setText(""); self.over.setCurrentIndex(0)
         self.jq.setValue(d.jpg_quality); self.wq.setValue(d.webp_quality); self.crf.setValue(d.video_crf); self.abr.setValue(d.audio_bitrate_k)
         self.preset.setCurrentText(d.compress_preset); self.enabled.setChecked(True); self.prompt_rename.setChecked(True); self.sound.setChecked(True); self.login.setChecked(False)
+        self.cpu_mode.setCurrentIndex(0)
         self.context_menu.setChecked(False)
         self.auto_upd.setChecked(True)
         self.s.reset_appearance(); self._apply_appearance()
@@ -336,6 +340,9 @@ class SettingsDialog(Panel):
         s.overwrite = self.over.currentData()
         s.jpg_quality, s.webp_quality, s.video_crf, s.audio_bitrate_k = self.jq.value(), self.wq.value(), self.crf.value(), self.abr.value()
         s.compress_preset, s.enabled, s.prompt_rename, s.sound = self.preset.currentText(), self.enabled.isChecked(), self.prompt_rename.isChecked(), self.sound.isChecked()
+        s.cpu_mode = "eco" if self.cpu_mode.currentIndex() == 0 else "full"
+        from . import engine
+        engine.set_cpu_mode(s.cpu_mode)
         s.auto_update = self.auto_upd.isChecked()
         if s.launch_at_login != self.login.isChecked():
             s.launch_at_login = self.login.isChecked()
