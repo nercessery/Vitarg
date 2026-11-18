@@ -517,59 +517,106 @@ def join_videos(srcs, ws: Workspace, progress, cancel) -> Path:
 
 # ------------------------------------------------------------------ pdf / archive
 def pdf_compress(src: Path, ws: Workspace) -> Path:
-    fz = engine._fitz()
-    with fz.open(str(src)) as doc:
-        if doc.needs_pass:
+    out = _out(ws, src, "Compressed")
+    if engine._has_fitz():
+        fz = engine._fitz()
+        with fz.open(str(src)) as doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            doc.save(str(out), garbage=4, deflate=True, clean=True)
+    else:
+        import pypdf
+        reader = pypdf.PdfReader(str(src))
+        if reader.is_encrypted:
             raise ConversionError("The PDF is password protected.")
-        out = _out(ws, src, "Compressed")
-        doc.save(str(out), garbage=4, deflate=True, clean=True)
-        if out.stat().st_size >= src.stat().st_size:
-            shutil.copyfile(src, out)
-        return out
+        writer = pypdf.PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+            writer.pages[-1].compress_content_streams()
+        with open(out, "wb") as f:
+            writer.write(f)
+    if out.stat().st_size >= src.stat().st_size:
+        shutil.copyfile(src, out)
+    return out
 
 
 def pdf_strip(src: Path, ws: Workspace) -> Path:
-    fz = engine._fitz()
-    with fz.open(str(src)) as doc:
-        if doc.needs_pass:
-            raise ConversionError("The PDF is password protected.")
-        doc.set_metadata({})
-        try:
-            doc.del_xml_metadata()
-        except Exception:
-            pass
-        out = _out(ws, src, "No Metadata")
-        doc.save(str(out), garbage=3, deflate=True)
+    out = _out(ws, src, "No Metadata")
+    if engine._has_fitz():
+        fz = engine._fitz()
+        with fz.open(str(src)) as doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            doc.set_metadata({})
+            try:
+                doc.del_xml_metadata()
+            except Exception:
+                pass
+            doc.save(str(out), garbage=3, deflate=True)
         return out
+    import pypdf
+    reader = pypdf.PdfReader(str(src))
+    if reader.is_encrypted:
+        raise ConversionError("The PDF is password protected.")
+    writer = pypdf.PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    writer.add_metadata({})
+    with open(out, "wb") as f:
+        writer.write(f)
+    return out
 
 
 def pdf_split(src: Path, ws: Workspace) -> Path:
-    fz = engine._fitz()
-    with fz.open(str(src)) as doc:
-        if doc.needs_pass:
-            raise ConversionError("The PDF is password protected.")
-        folder = ws.path(f"{src.stem} Pages")
-        folder.mkdir()
-        for i in range(len(doc)):
-            with fz.open() as part:
-                part.insert_pdf(doc, from_page=i, to_page=i)
-                part.save(str(folder / f"Page {i + 1:03d}.pdf"))
+    folder = ws.path(f"{src.stem} Pages")
+    folder.mkdir()
+    if engine._has_fitz():
+        fz = engine._fitz()
+        with fz.open(str(src)) as doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            for i in range(len(doc)):
+                with fz.open() as part:
+                    part.insert_pdf(doc, from_page=i, to_page=i)
+                    part.save(str(folder / f"Page {i + 1:03d}.pdf"))
         return folder
+    import pypdf
+    reader = pypdf.PdfReader(str(src))
+    if reader.is_encrypted:
+        raise ConversionError("The PDF is password protected.")
+    for i, page in enumerate(reader.pages):
+        writer = pypdf.PdfWriter()
+        writer.add_page(page)
+        with open(folder / f"Page {i + 1:03d}.pdf", "wb") as f:
+            writer.write(f)
+    return folder
 
 
 def pdf_merge(srcs, ws: Workspace) -> Path:
     if not srcs:
         raise ConversionError("No files selected to merge.")
-    fz = engine._fitz()
-    with fz.open() as merged:
-        for s in srcs:
-            with fz.open(str(s)) as d:
-                if d.needs_pass:
-                    raise ConversionError(f"{Path(s).name} is password protected.")
-                merged.insert_pdf(d)
-        out = ws.path("Merged.pdf")
-        merged.save(str(out), garbage=3, deflate=True)
+    out = ws.path("Merged.pdf")
+    if engine._has_fitz():
+        fz = engine._fitz()
+        with fz.open() as merged:
+            for s in srcs:
+                with fz.open(str(s)) as d:
+                    if d.needs_pass:
+                        raise ConversionError(f"{Path(s).name} is password protected.")
+                    merged.insert_pdf(d)
+            merged.save(str(out), garbage=3, deflate=True)
         return out
+    import pypdf
+    writer = pypdf.PdfWriter()
+    for s in srcs:
+        reader = pypdf.PdfReader(str(s))
+        if reader.is_encrypted:
+            raise ConversionError(f"{Path(s).name} is password protected.")
+        for page in reader.pages:
+            writer.add_page(page)
+    with open(out, "wb") as f:
+        writer.write(f)
+    return out
 
 
 def extract_archive(src: Path, ws: Workspace) -> Path:
@@ -621,7 +668,18 @@ def resize_image(src: Path, ws: Workspace, p: dict, settings) -> Path:
         else:
             im = ImageOps.exif_transpose(raw)
             resized = im.resize((tw, th), Image.LANCZOS)
-            _save_same(resized, out, fmt, settings.jpg_quality)
+            try:
+                _save_same(resized, out, fmt, settings.jpg_quality)
+            finally:
+                try:
+                    resized.close()
+                except Exception:
+                    pass
+                if im is not raw:
+                    try:
+                        im.close()
+                    except Exception:
+                        pass
         return out
     finally:
         try:
@@ -1103,7 +1161,7 @@ def media_frame(src, t: float, width: int = 480):
     try:
         subprocess.run([need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, t):.3f}",
                         "-i", str(src), "-frames:v", "1", "-vf", f"scale={width}:-2", out],
-                       capture_output=True, creationflags=engine.NOWIN)
+                       capture_output=True, creationflags=engine.NOWIN, timeout=15)
         if not os.path.exists(out) or os.path.getsize(out) == 0:
             raise ConversionError("No frame at that time.")
         with Image.open(out) as im:
@@ -1122,10 +1180,10 @@ def waveform_image(src, w: int = 500, h: int = 120):
     fd, out = tempfile.mkstemp(suffix=".png"); os.close(fd)
     try:
         subprocess.run([need_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-vn", "-threads", "2",
-                        "-i", str(src), "-filter_complex",
+                        "-t", "180", "-i", str(src), "-filter_complex",
                         f"aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=white", "-max_muxing_queue_size", "1024",
                         "-frames:v", "1", out],
-                       capture_output=True, creationflags=engine.NOWIN)
+                       capture_output=True, creationflags=engine.NOWIN, timeout=15)
         if not os.path.exists(out) or os.path.getsize(out) == 0:
             raise ConversionError("Could not draw the waveform.")
         with Image.open(out) as im:

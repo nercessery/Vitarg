@@ -102,28 +102,47 @@ def purge_windows_binaries(directory: Optional[Path] = None) -> int:
     return removed
 
 
+def _is_writable_and_executable_dir(d: Path) -> bool:
+    """Verify that directory d is writable AND not mounted with 'noexec' on Linux."""
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        test_file = d / ".exec_test"
+        test_file.write_bytes(b"#!/bin/sh\nexit 0\n")
+        if sys.platform != "win32":
+            test_file.chmod(0o755)
+            can_exec = os.access(test_file, os.X_OK)
+        else:
+            can_exec = True
+        test_file.unlink(missing_ok=True)
+        return can_exec
+    except Exception:
+        return False
+
+
 def get_default_tools_dir() -> Path:
-    """Determine the best writable directory to store downloaded tools."""
+    """Determine the best writable and executable (non-noexec) directory to store downloaded tools."""
+    candidates = []
     try:
         from . import engine
-        base_app = engine.app_dir()
-        t_dir = base_app / "tools"
-        t_dir.mkdir(parents=True, exist_ok=True)
-        test_file = t_dir / ".write_test"
-        test_file.write_text("ok", encoding="utf-8")
-        test_file.unlink(missing_ok=True)
-        purge_windows_binaries(t_dir)
-        return t_dir
+        candidates.append(engine.app_dir() / "tools")
     except Exception:
         pass
 
     if sys.platform != "win32":
-        user_dir = Path.home() / ".local" / "share" / "vitarg" / "tools"
-        user_dir.mkdir(parents=True, exist_ok=True)
-        purge_windows_binaries(user_dir)
-        return user_dir
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if xdg_data:
+            candidates.append(Path(xdg_data) / "vitarg" / "tools")
+        candidates.append(Path.home() / ".local" / "share" / "vitarg" / "tools")
+        candidates.append(Path.cwd() / "tools")
 
-    fallback = Path(tempfile.gettempdir()) / "vitarg_tools"
+    candidates.append(Path(tempfile.gettempdir()) / "vitarg_tools")
+
+    for c_dir in candidates:
+        if _is_writable_and_executable_dir(c_dir):
+            purge_windows_binaries(c_dir)
+            return c_dir
+
+    fallback = candidates[0] if candidates else (Path(tempfile.gettempdir()) / "vitarg_tools")
     fallback.mkdir(parents=True, exist_ok=True)
     purge_windows_binaries(fallback)
     return fallback
@@ -238,7 +257,7 @@ def fetch_linux_ffmpeg(target_dir: Optional[Path] = None) -> tuple[Path, Path]:
                         if base in ("ffmpeg", "ffprobe") and member.size > 100_000:
                             f_obj = tf.extractfile(member)
                             if f_obj:
-                                tmp_bin = tmp_dir / f".tmp_{base}"
+                                tmp_bin = tools_dir / f".tmp_{base}"
                                 tmp_bin.write_bytes(f_obj.read())
                                 if is_valid_linux_binary(tmp_bin):
                                     target = tools_dir / base
@@ -325,7 +344,7 @@ def fetch_linux_pandoc(target_dir: Optional[Path] = None) -> Path:
                         if base == "pandoc" and member.size > 100_000:
                             f_obj = tf.extractfile(member)
                             if f_obj:
-                                tmp_bin = tmp_dir / ".tmp_pandoc"
+                                tmp_bin = tools_dir / ".tmp_pandoc"
                                 tmp_bin.write_bytes(f_obj.read())
                                 if is_valid_linux_binary(tmp_bin):
                                     os.replace(tmp_bin, pandoc_bin)

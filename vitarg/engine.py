@@ -282,6 +282,8 @@ class Workspace:
         results = []
         over = self.settings.overwrite == "overwrite"
         for item in sorted(self.work.iterdir()):
+            if item.name.startswith(("_", ".")):
+                continue
             final = unique_name(self.outdir, item.name, over)
             if over and final.exists():
                 try:
@@ -320,7 +322,7 @@ def probe(path) -> dict:
     ffprobe = need_tool("ffprobe")
     r = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height",
                         "-of", "json", str(path)], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", creationflags=NOWIN)
+                       encoding="utf-8", errors="replace", creationflags=NOWIN, timeout=15)
     if r.returncode != 0:
         raise ConversionError(f"Unreadable media file: {r.stderr.strip()[-300:]}")
     d = json.loads(r.stdout or "{}")
@@ -885,19 +887,40 @@ def text_to_image(text: str, out: Path, fmt: str, settings) -> None:
         img.save(out, "PNG", optimize=True)
 
 
+def _has_fitz() -> bool:
+    try:
+        _fitz()
+        return True
+    except ConversionError:
+        return False
+
+
 def html_to_pdf(html_text: str, out: Path, archive_dir: Optional[Path] = None) -> None:
-    fz = _fitz()
-    story = fz.Story(html=html_text, archive=fz.Archive(str(archive_dir)) if archive_dir else None)
-    writer = fz.DocumentWriter(str(out))
-    media = fz.paper_rect("letter")
-    where = media + (54, 54, -54, -54)
-    more = 1
-    while more:
-        dev = writer.begin_page(media)
-        more, _ = story.place(where)
-        story.draw(dev)
-        writer.end_page()
-    writer.close()
+    if _has_fitz():
+        fz = _fitz()
+        story = fz.Story(html=html_text, archive=fz.Archive(str(archive_dir)) if archive_dir else None)
+        writer = fz.DocumentWriter(str(out))
+        media = fz.paper_rect("letter")
+        where = media + (54, 54, -54, -54)
+        more = 1
+        while more:
+            dev = writer.begin_page(media)
+            more, _ = story.place(where)
+            story.draw(dev)
+            writer.end_page()
+        writer.close()
+        return
+    # Fallback: strip HTML tags and render via Pillow multi-page PDF
+    plain = re.sub(r"<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", html_text, flags=re.I)
+    plain = _html.unescape(re.sub(r"<[^>]+>", "", plain)).strip() or " "
+    tmp_img = out.parent / f"._tmp_{out.stem}.png"
+    try:
+        from PIL import Image
+        text_to_image(plain, tmp_img, "png", None)
+        with Image.open(tmp_img) as im:
+            _flatten(im).save(out, "PDF", resolution=150.0)
+    finally:
+        tmp_img.unlink(missing_ok=True)
 
 
 def text_to_html(text: str) -> str:
@@ -917,63 +940,123 @@ def pandoc(args: list[str], cwd=None) -> None:
 
 
 def pdf_to_text(src: Path) -> str:
-    fz = _fitz()
+    if _has_fitz():
+        fz = _fitz()
+        try:
+            doc = fz.open(str(src))
+        except Exception as e:
+            raise ConversionError(f"Cannot open PDF: {e}")
+        with doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            pages = [p.get_text("text") for p in doc]
+            if not any(t.strip() for t in pages):
+                raise ConversionError("This PDF has no selectable text (it looks scanned). OCR is required and not supported.")
+            return "\n\n".join(pages)
     try:
-        doc = fz.open(str(src))
-    except Exception as e:
-        raise ConversionError(f"Cannot open PDF: {e}")
-    with doc:
-        if doc.needs_pass:
+        import pypdf
+        reader = pypdf.PdfReader(str(src))
+        if reader.is_encrypted:
             raise ConversionError("The PDF is password protected.")
-        pages = [p.get_text("text") for p in doc]
+        pages = [(p.extract_text() or "") for p in reader.pages]
         if not any(t.strip() for t in pages):
             raise ConversionError("This PDF has no selectable text (it looks scanned). OCR is required and not supported.")
         return "\n\n".join(pages)
+    except ConversionError:
+        raise
+    except Exception as e:
+        raise ConversionError(f"Cannot read PDF text: {e}")
 
 
 def pdf_to_images(src: Path, fmt: str, ws: Workspace, settings, progress) -> None:
     from PIL import Image
-    fz = _fitz()
-    with fz.open(str(src)) as doc:
-        if doc.needs_pass:
-            raise ConversionError("The PDF is password protected.")
-        n = len(doc)
-        if n == 0:
-            raise ConversionError("The PDF has no pages.")
-        target_dir = ws.work if n == 1 else ws.path(f"{src.stem} {fmt.upper()} Pages")
-        if n > 1:
-            target_dir.mkdir()
-        for i, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=300, alpha=False)
-            im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            name = f"{src.stem}.{fmt}" if n == 1 else f"Page {i + 1:03d}.{fmt}"
-            if fmt == "jpg":
-                im.save(target_dir / name, "JPEG", quality=settings.jpg_quality, dpi=(300, 300))
-            else:
-                im.save(target_dir / name, "PNG", optimize=True, dpi=(300, 300))
-            progress((i + 1) / n)
+    if _has_fitz():
+        fz = _fitz()
+        with fz.open(str(src)) as doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            n = len(doc)
+            if n == 0:
+                raise ConversionError("The PDF has no pages.")
+            target_dir = ws.work if n == 1 else ws.path(f"{src.stem} {fmt.upper()} Pages")
+            if n > 1:
+                target_dir.mkdir()
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=300, alpha=False)
+                im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                name = f"{src.stem}.{fmt}" if n == 1 else f"Page {i + 1:03d}.{fmt}"
+                if fmt == "jpg":
+                    im.save(target_dir / name, "JPEG", quality=settings.jpg_quality, dpi=(300, 300))
+                else:
+                    im.save(target_dir / name, "PNG", optimize=True, dpi=(300, 300))
+                progress((i + 1) / n)
+        return
+    pdftoppm = shutil.which("pdftoppm")
+    if pdftoppm:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="vitarg_pdfimg_"))
+        try:
+            subprocess.run([pdftoppm, "-png", "-r", "300", str(src), str(tmp_dir / "p")], check=True, capture_output=True)
+            rendered = sorted(tmp_dir.glob("p*.png"))
+            if not rendered:
+                raise ConversionError("The PDF has no pages.")
+            n = len(rendered)
+            target_dir = ws.work if n == 1 else ws.path(f"{src.stem} {fmt.upper()} Pages")
+            if n > 1:
+                target_dir.mkdir()
+            for i, rp in enumerate(rendered):
+                name = f"{src.stem}.{fmt}" if n == 1 else f"Page {i + 1:03d}.{fmt}"
+                with Image.open(rp) as im:
+                    if fmt == "jpg":
+                        _flatten(im).save(target_dir / name, "JPEG", quality=settings.jpg_quality, dpi=(300, 300))
+                    else:
+                        im.save(target_dir / name, "PNG", optimize=True, dpi=(300, 300))
+                progress((i + 1) / n)
+            return
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    raise ConversionError("PDF to image conversion requires PyMuPDF or poppler-utils (pdftoppm).")
 
 
 def pdf_to_docx(src: Path, out: Path) -> None:
     import io
-    fz = _fitz()
     from docx import Document
     from docx.shared import Inches
-    with fz.open(str(src)) as doc:
-        if doc.needs_pass:
+    if _has_fitz():
+        fz = _fitz()
+        with fz.open(str(src)) as doc:
+            if doc.needs_pass:
+                raise ConversionError("The PDF is password protected.")
+            d = Document()
+            for i, page in enumerate(doc):
+                txt = page.get_text("text").strip()
+                if txt:
+                    for para in re.split(r"\n\s*\n", txt):
+                        d.add_paragraph(" ".join(para.split("\n")))
+                else:
+                    pix = page.get_pixmap(dpi=150)
+                    d.add_picture(io.BytesIO(pix.tobytes("png")), width=Inches(6.5))
+                if i < len(doc) - 1:
+                    d.add_page_break()
+            d.save(out)
+        return
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(str(src))
+        if reader.is_encrypted:
             raise ConversionError("The PDF is password protected.")
         d = Document()
-        for i, page in enumerate(doc):
-            txt = page.get_text("text").strip()
+        for i, page in enumerate(reader.pages):
+            txt = (page.extract_text() or "").strip()
             if txt:
                 for para in re.split(r"\n\s*\n", txt):
                     d.add_paragraph(" ".join(para.split("\n")))
-            else:
-                pix = page.get_pixmap(dpi=150)
-                d.add_picture(io.BytesIO(pix.tobytes("png")), width=Inches(6.5))
-            if i < len(doc) - 1:
+            if i < len(reader.pages) - 1:
                 d.add_page_break()
         d.save(out)
+    except ConversionError:
+        raise
+    except Exception as e:
+        raise ConversionError(f"Cannot convert PDF to DOCX: {e}")
 
 
 def convert_document(src: Path, sf: str, target: str, ws: Workspace, settings, progress) -> None:

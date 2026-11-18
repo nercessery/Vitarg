@@ -38,20 +38,22 @@ def make_icon() -> QIcon:
 
 
 class DropTargetWidget(QWidget):
-    """Floating desktop widget allowing native drag-and-drop on Linux (X11 & Wayland)."""
+    """Floating desktop widget allowing native drag-and-drop on Windows & Linux."""
     def __init__(self, ctl: Controller):
         super().__init__(None, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool)
         self.ctl = ctl
         self.hover = False
         self._drag_pos = None
+        self._press_global = None
+        self._moved_during_drag = False
         self.setAcceptDrops(True)
         self.resize(72, 72)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setToolTip(
             "Vitarg Drop Target\n"
-            "• Drag files here to Convert (hold Alt for Tools)\n"
-            "• Double-click to select files\n"
-            "• Right-click for options"
+            "• Drag & drop files here to open the Wheel (hold Alt for Tools)\n"
+            "• Click center of the Wheel to switch Convert ↔ Tools\n"
+            "• Double-click to select files · Right-click for menu"
         )
         scr = QGuiApplication.primaryScreen()
         if scr:
@@ -92,18 +94,23 @@ class DropTargetWidget(QWidget):
         self.hover = False
         self.update()
         urls = e.mimeData().urls()
-        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        paths = [u.toLocalFile() for u in urls if u.isLocalFile() and os.path.isfile(u.toLocalFile())]
         if paths:
             mods = e.modifiers()
             uni = keys.universe_for(self.ctl.s.conv_trigger, self.ctl.s.tools_trigger)
             pressed = keys.pressed_set(uni)
             use_tools = bool(mods & Qt.AltModifier) or keys.matches(pressed, self.ctl.s.tools_trigger)
-            self.ctl.present_files(paths, kind="tools" if use_tools else "conv")
+            kind = "tools" if use_tools else "conv"
+            # Deferred via singleShot(0) so dropEvent finishes cleanly before showing the interactive wheel
+            QTimer.singleShot(0, lambda p=paths, k=kind: self.ctl.present_files(p, kind=k))
         e.acceptProposedAction()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            gp = e.globalPosition().toPoint()
+            self._press_global = gp
+            self._drag_pos = gp - self.frameGeometry().topLeft()
+            self._moved_during_drag = False
             e.accept()
         elif e.button() == Qt.RightButton:
             menu = QMenu(self)
@@ -117,11 +124,17 @@ class DropTargetWidget(QWidget):
 
     def mouseMoveEvent(self, e):
         if self._drag_pos and (e.buttons() & Qt.LeftButton):
-            self.move(e.globalPosition().toPoint() - self._drag_pos)
+            gp = e.globalPosition().toPoint()
+            if self._press_global and (gp - self._press_global).manhattanLength() >= 4:
+                self._moved_during_drag = True
+            if self._moved_during_drag:
+                self.move(gp - self._drag_pos)
             e.accept()
 
     def mouseReleaseEvent(self, e):
         self._drag_pos = None
+        self._press_global = None
+        self._moved_during_drag = False
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -134,9 +147,10 @@ class Controller:
         self.jobs: set = set()
         self.settings_dlg = None
         self.wheel = Wheel(settings)
-        self.monitor = DragMonitor(settings)
+        self.monitor = DragMonitor(settings, wheel=self.wheel)
         self.monitor.trigger.connect(self.wheel.present)
-        self.monitor.released.connect(lambda: QTimer.singleShot(350, self.wheel.dismiss))
+        # Releasing the mouse button latches the wheel open instead of dismissing it!
+        self.monitor.released.connect(self.wheel.latch_interactive)
         self.monitor.cancelled.connect(self.wheel.dismiss)
         self.wheel.chosen.connect(self.on_choice)
 
@@ -236,7 +250,8 @@ class Controller:
                 c = screen.availableGeometry().center()
                 return c.x(), c.y()
             return 400, 300
-        pos = QCursor.pos()
+        gx, gy = keys.cursor_pos()
+        pos = QPoint(gx, gy) if (gx or gy) else QCursor.pos()
         if any(s.geometry().contains(pos) for s in self.app.screens()):
             return pos.x(), pos.y()
         if screen:
@@ -245,11 +260,12 @@ class Controller:
         return pos.x(), pos.y()
 
     def present_files(self, paths: list[str], kind: str = "conv"):
-        valid = [str(Path(p)) for p in paths if os.path.exists(p)]
+        valid = [str(Path(p)) for p in paths if os.path.isfile(p)]
         if not valid:
             return
         gx, gy = self._get_invocation_pos()
         self.wheel.present(kind, valid, gx, gy, interactive=True)
+        self.wheel.latch_interactive()
 
     def select_files_dialog(self, initial_dir: Optional[str] = None, kind: str = "conv"):
         start_dir = initial_dir if (initial_dir and os.path.isdir(initial_dir)) else ""
@@ -334,7 +350,9 @@ class Controller:
 
     # -------------------------------------------------------------
     def on_choice(self, kind: str, ident: str, paths: list):
-        paths = [str(Path(p)) for p in paths]
+        paths = [str(Path(p)) for p in paths if os.path.isfile(p)]
+        if not paths:
+            return
         custom_name = ""
 
         if kind == "conv":

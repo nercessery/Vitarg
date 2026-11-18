@@ -159,7 +159,16 @@ def get_file_info(file_path: str | Path, compute_hash: bool = True) -> dict:
                     if v and str(v).strip():
                         info["metadata"][k.capitalize()] = str(v)
         except Exception:
-            pass
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(str(p))
+                info["media"]["Page Count"] = str(len(reader.pages))
+                if reader.metadata:
+                    for k, v in reader.metadata.items():
+                        if v and str(v).strip():
+                            info["metadata"][str(k).lstrip("/").capitalize()] = str(v)
+            except Exception:
+                pass
 
     return info
 

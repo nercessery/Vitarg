@@ -1,7 +1,7 @@
-"""Watches for 'File Manager drag + trigger keys' and tells the UI to show a wheel.
+"""Watches for 'File Manager drag + trigger keys' or trigger key presses and tells the UI to show a wheel.
 
-Supports both Windows (Explorer via GetAsyncKeyState) and Linux X11/XWayland (file managers & desktop).
-On Linux Wayland or any desktop environment, users can also drop files onto the Floating Drop Target."""
+Once the wheel is shown, releasing the trigger key (e.g. Shift or Alt+Shift) or releasing the mouse button
+does NOT close the wheel — it stays open until the user clicks outside the wheel, presses Esc, or selects a petal."""
 import os, subprocess, sys, threading, time
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -31,7 +31,6 @@ def _fg_info() -> tuple[int, str]:
         _user32.GetClassNameW(hwnd, _buf, 256)
         return hwnd, _buf.value
     if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
-        # Check active X11 window class using xprop if available (fast, non-blocking)
         try:
             r = subprocess.run(
                 ["xprop", "-root", "_NET_ACTIVE_WINDOW"],
@@ -53,7 +52,6 @@ def _fg_info() -> tuple[int, str]:
 
 def _is_linux_fm_or_desktop(cls_info: str) -> bool:
     if not cls_info:
-        # When xprop is not installed, allow X11 drag trigger to arm so Shift+Drag still works
         return True
     low = cls_info.lower()
     if "vitarg" in low:
@@ -96,7 +94,15 @@ def explorer_selection(hwnd: int, cls: str) -> list[str]:
                     continue
         if doc is None:
             return []
-        return [i.Path for i in doc.SelectedItems() if os.path.isfile(i.Path)]
+        out = []
+        for item in doc.SelectedItems():
+            try:
+                p = getattr(item, "Path", "")
+                if p and os.path.isfile(p):
+                    out.append(p)
+            except Exception:
+                continue
+        return out
     except Exception:
         return []
     finally:
@@ -105,13 +111,14 @@ def explorer_selection(hwnd: int, cls: str) -> list[str]:
 
 class DragMonitor(QObject):
     trigger = Signal(str, list, int, int)      # kind, paths, x, y (Qt logical coordinates)
-    released = Signal()                        # primary button released (UI hides after a short delay)
-    cancelled = Signal()                       # Esc pressed during a drag
+    released = Signal()                        # primary button released -> latch wheel in interactive mode
+    cancelled = Signal()                       # Esc pressed -> dismiss wheel
 
-    def __init__(self, settings):
+    def __init__(self, settings, wheel=None):
         super().__init__()
         self._lock = threading.Lock()
         self.s = settings
+        self.wheel = wheel
         self.timer = QTimer(self)
         self.timer.setInterval(33)                 # 30 FPS when idle, ramps up to 60 FPS during drags
         self.timer.timeout.connect(self._tick)
@@ -128,7 +135,8 @@ class DragMonitor(QObject):
     def _reset(self):
         with self._lock:
             self.armed = False
-            self.shown = None                        # kind currently shown
+            self.shown = None                        # kind currently shown during this drag cycle
+            self.pending_kind = None                 # remembers trigger tapped during drag even after key release
             self.origin = (0, 0)
             self.sel: list[str] = []
             self.suppressed = False
@@ -137,7 +145,6 @@ class DragMonitor(QObject):
     def _query(self, hwnd, cls, token):
         if sys.platform != "win32":
             return
-        # Quick poll: try immediately first, then retry after brief intervals if empty
         for delay in (0.0, 0.04, 0.08):
             if delay > 0:
                 time.sleep(delay)
@@ -158,18 +165,35 @@ class DragMonitor(QObject):
         s = self.s
         if not s.enabled:
             return
+
+        # If Esc is pressed while the wheel is shown, dismiss immediately
+        if keys.key_down(0x1B):
+            if self.shown is not None or (self.wheel is not None and self.wheel.isVisible()):
+                self.suppressed = True
+                self.cancelled.emit()
+                self.shown = None
+            return
+
+        # If the wheel is already latched & visible (and we are not in the middle of the initial drag that opened it),
+        # let the wheel handle its own clicks (center toggle, petal click, outside click dismissal).
+        if self.wheel is not None and self.wheel.isVisible() and self.shown is None:
+            return
+
         down = keys.primary_button_down()
         if not down:
             if self.timer.interval() != 33:
-                self.timer.setInterval(33)          # return to battery-saving idle frequency
+                self.timer.setInterval(33)
             if self.armed or self.shown:
                 if self.shown:
+                    # Mouse button released: latch the wheel open rather than closing it!
                     self.released.emit()
                 self._reset()
             return
+
         if self.suppressed:
             return
-        if not self.armed and self.shown is None:             # rising edge
+
+        if not self.armed and self.shown is None:             # rising edge of mouse press
             hwnd, cls = _fg_info()
             if sys.platform == "win32":
                 self.armed = cls in EXPLORER_CLASSES
@@ -186,25 +210,29 @@ class DragMonitor(QObject):
                 if sys.platform == "win32":
                     threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
             return
+
         if not self.armed and self.shown is None:
             return
+
         if self.timer.interval() != 16:
             self.timer.setInterval(16)
-        if keys.key_down(0x1B):                               # Esc
-            self.suppressed = True
-            self.cancelled.emit()
-            self.shown = None
-            return
+
         uni = keys.universe_for(s.conv_trigger, s.tools_trigger)
         pressed = keys.pressed_set(uni)
         kind = "conv" if keys.matches(pressed, s.conv_trigger) else "tools" if keys.matches(pressed, s.tools_trigger) else None
-        if kind is None:
-            if self.shown is not None:
-                self.cancelled.emit()
-                self.shown = None
+
+        if kind is not None:
+            self.pending_kind = kind
+
+        effective_kind = kind or self.pending_kind
+
+        # IMPORTANT: Once the wheel is open (or if Shift was tapped), releasing Shift does NOT close the wheel!
+        if effective_kind is None:
             return
-        if kind == self.shown:
+
+        if effective_kind == self.shown:
             return
+
         x, y = keys.cursor_pos()
         moved = max(abs(x - self.origin[0]), abs(y - self.origin[1]))
         with self._lock:
@@ -215,9 +243,9 @@ class DragMonitor(QObject):
         )
         if self.shown is None and not is_drag:
             return
-        self.shown = kind
+        self.shown = effective_kind
         gx, gy = keys.cursor_pos()
         if gx == 0 and gy == 0:
             p = QCursor.pos()
             gx, gy = p.x(), p.y()
-        self.trigger.emit(kind, current_sel, gx, gy)
+        self.trigger.emit(effective_kind, current_sel, gx, gy)
