@@ -1,5 +1,5 @@
-"""The radial picker: a translucent always-on-top window that is an OLE drop target for files."""
-import math, os, sys, time
+"""The radial picker: a translucent always-on-top window that is a drop target for files."""
+import math, os, shutil, subprocess, sys, time
 from pathlib import Path
 
 from PySide6.QtCore import (Qt, QPoint, QPointF, QRectF, QSize, Signal, Property,
@@ -45,6 +45,7 @@ class Wheel(QWidget):
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setFixedSize(SIZE, SIZE)
+        self.setToolTip("Click a petal to run · Click center disc (or press Tab) to switch Convert / Tools")
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.fade.setDuration(130)
         self.fade.setEasingCurve(QEasingCurve.OutCubic)
@@ -53,6 +54,13 @@ class Wheel(QWidget):
         self.pop.setDuration(190)
         self.pop.setEasingCurve(QEasingCurve.OutBack)
         self._sound = app_dir() / "assets" / "HighlightSound.wav"
+        self._linux_player = None
+        if sys.platform != "win32":
+            for pl in ("pw-play", "paplay", "aplay"):
+                found = shutil.which(pl)
+                if found:
+                    self._linux_player = found
+                    break
         self._font_label = QFont("Segoe UI Variable Display", 13, QFont.Bold)
         self._font_label.setFamilies([
             "Segoe UI Variable Display", "Segoe UI", "Inter", "Ubuntu",
@@ -96,6 +104,11 @@ class Wheel(QWidget):
             self.items = [(t.id, t.label, t.id) for t in tool_list][:16]
         self._rebuild()
         self.update()
+
+    def toggle_kind(self):
+        """Switch between Conversion wheel ('conv') and Tools wheel ('tools')."""
+        new_kind = "tools" if self.kind == "conv" else "conv"
+        self.set_content(new_kind, self.paths)
 
     def _rebuild(self):
         n = len(self.items)
@@ -272,9 +285,13 @@ class Wheel(QWidget):
 
     def eventFilter(self, watched, event):
         if getattr(self, "interactive", False) and self.isVisible():
-            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Escape, Qt.Key_Back):
-                self.dismiss()
-                return True
+            if event.type() == QEvent.KeyPress:
+                if event.key() in (Qt.Key_Escape, Qt.Key_Back):
+                    self.dismiss()
+                    return True
+                if event.key() == Qt.Key_Tab:
+                    self.toggle_kind()
+                    return True
             if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
                 if watched is not self and not self.isAncestorOf(watched):
                     self.dismiss()
@@ -346,7 +363,14 @@ class Wheel(QWidget):
                 self.dismiss()
                 self.chosen.emit(kind, ident, paths)
                 return
-            # Clicked outside petals or on center capsule: dismiss
+            # Clicking the center disc/capsule toggles between Convert and Tools wheels!
+            c = SIZE / 2
+            s = self._scale or 1.0
+            dx, dy = (e.position().x() - c) / s, (e.position().y() - c) / s
+            if math.hypot(dx, dy) <= R_CORE and self.paths:
+                self.toggle_kind()
+                return
+            # Clicked outside petals and outside center capsule: dismiss
             self.dismiss()
 
     def mouseReleaseEvent(self, e):
@@ -355,6 +379,8 @@ class Wheel(QWidget):
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Escape, Qt.Key_Back):
             self.dismiss()
+        elif e.key() == Qt.Key_Tab:
+            self.toggle_kind()
         else:
             super().keyPressEvent(e)
 
@@ -377,7 +403,7 @@ class Wheel(QWidget):
                 pass
         super().hideEvent(e)
 
-    # OLE drag & drop -------------------------------------------------
+    # OLE / XDND drag & drop ------------------------------------------
     @staticmethod
     def _paths(event) -> list[str]:
         md = event.mimeData()
@@ -408,10 +434,13 @@ class Wheel(QWidget):
                         winsound.PlaySound(str(self._sound), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
                     except Exception:
                         pass
-                elif sys.platform != "win32":
+                elif sys.platform != "win32" and self._sound.exists() and self._linux_player:
                     try:
-                        from PySide6.QtWidgets import QApplication
-                        QApplication.beep()
+                        subprocess.Popen(
+                            [self._linux_player, str(self._sound)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
                     except Exception:
                         pass
             self.update()
@@ -422,7 +451,7 @@ class Wheel(QWidget):
             e.ignore(); return
         if paths != self.paths:                      # selection unknown/changed: rebuild petals from the real drag data
             self.set_content(self.kind, paths)
-        e.setDropAction(Qt.CopyAction)               # always COPY so Explorer never treats the drop as a move
+        e.setDropAction(Qt.CopyAction)               # always COPY so file manager never treats the drop as a move
         e.accept()
 
     def dragMoveEvent(self, e):
@@ -442,5 +471,4 @@ class Wheel(QWidget):
         QTimer.singleShot(0, self.dismiss)
         if paths and 0 <= i < len(self.items):
             kind, ident = self.kind, self.items[i][0]
-            # Deferred: dropEvent runs inside Explorer's drag-and-drop call; opening a modal dialog here would freeze Explorer.
             QTimer.singleShot(0, lambda: self.chosen.emit(kind, ident, paths))

@@ -1,17 +1,21 @@
-"""Watches for 'Explorer drag + trigger keys' and tells the UI to show a wheel.
+"""Watches for 'File Manager drag + trigger keys' and tells the UI to show a wheel.
 
-No keyboard/mouse hooks and no admin rights are used: it polls GetAsyncKeyState, like the original polls
-modifier state. A drag counts when the primary button is held, the pointer moved, the foreground window is
-Explorer/desktop, and a file drag is in progress (Explorer's 'SysDragImage' window, or a known selection)."""
-import sys, threading, time
+Supports both Windows (Explorer via GetAsyncKeyState) and Linux X11/XWayland (file managers & desktop).
+On Linux Wayland or any desktop environment, users can also drop files onto the Floating Drop Target."""
+import os, subprocess, sys, threading, time
 
-from PySide6.QtCore import QObject, QTimer, Signal, QPoint
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QCursor
 
 from . import keys
 from .settings import normalize
 
 EXPLORER_CLASSES = {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW"}
+LINUX_FILE_MANAGERS = {
+    "nautilus", "org.gnome.nautilus", "nemo", "dolphin", "org.kde.dolphin",
+    "thunar", "pcmanfm", "pcmanfm-qt", "caja", "konqueror", "krusader",
+    "spacefm", "xfdesktop", "plasmashell", "desktop_window", "ding",
+}
 DRAG_THRESHOLD_PX = 8
 
 _user32 = None
@@ -21,12 +25,40 @@ if sys.platform == "win32":
     _buf = ctypes.create_unicode_buffer(256)
 
 
-def _fg_info():
-    if not _user32:
-        return 0, ""
-    hwnd = _user32.GetForegroundWindow()
-    _user32.GetClassNameW(hwnd, _buf, 256)
-    return hwnd, _buf.value
+def _fg_info() -> tuple[int, str]:
+    if _user32:
+        hwnd = _user32.GetForegroundWindow()
+        _user32.GetClassNameW(hwnd, _buf, 256)
+        return hwnd, _buf.value
+    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+        # Check active X11 window class using xprop if available (fast, non-blocking)
+        try:
+            r = subprocess.run(
+                ["xprop", "-root", "_NET_ACTIVE_WINDOW"],
+                capture_output=True, text=True, timeout=0.15,
+            )
+            if r.returncode == 0 and "#" in r.stdout:
+                win_id = r.stdout.split("#")[-1].strip().split()[0]
+                if win_id and win_id != "0x0":
+                    r2 = subprocess.run(
+                        ["xprop", "-id", win_id, "WM_CLASS"],
+                        capture_output=True, text=True, timeout=0.15,
+                    )
+                    if r2.returncode == 0:
+                        return int(win_id, 16), r2.stdout.lower()
+        except Exception:
+            pass
+    return 0, ""
+
+
+def _is_linux_fm_or_desktop(cls_info: str) -> bool:
+    if not cls_info:
+        # When xprop is not installed, allow X11 drag trigger to arm so Shift+Drag still works
+        return True
+    low = cls_info.lower()
+    if "vitarg" in low:
+        return False
+    return any(fm in low for fm in LINUX_FILE_MANAGERS)
 
 
 def _drag_image_present() -> bool:
@@ -37,6 +69,8 @@ def _drag_image_present() -> bool:
 
 def explorer_selection(hwnd: int, cls: str) -> list[str]:
     """Selected file paths of the Explorer window / desktop (best effort; [] if unavailable)."""
+    if sys.platform != "win32":
+        return []
     try:
         import pythoncom, win32com.client
     except ImportError:
@@ -62,7 +96,6 @@ def explorer_selection(hwnd: int, cls: str) -> list[str]:
                     continue
         if doc is None:
             return []
-        import os
         return [i.Path for i in doc.SelectedItems() if os.path.isfile(i.Path)]
     except Exception:
         return []
@@ -86,9 +119,8 @@ class DragMonitor(QObject):
         self.last_pressed: set = set()          # exposed for the settings 'test' panel
 
     def start(self):
-        if sys.platform != "win32":
-            return
-        self.timer.start()
+        if sys.platform == "win32" or (sys.platform.startswith("linux") and os.environ.get("DISPLAY")):
+            self.timer.start()
 
     def stop(self):
         self.timer.stop()
@@ -103,6 +135,8 @@ class DragMonitor(QObject):
             self.token = 0
 
     def _query(self, hwnd, cls, token):
+        if sys.platform != "win32":
+            return
         # Quick poll: try immediately first, then retry after brief intervals if empty
         for delay in (0.0, 0.04, 0.08):
             if delay > 0:
@@ -115,15 +149,12 @@ class DragMonitor(QObject):
                 with self._lock:
                     if token == self.token:
                         self.sel = list(paths)
-                        # If the wheel is already visible, dynamically update it with the resolved selection
                         if self.shown:
                             p = QCursor.pos()
                             self.trigger.emit(self.shown, list(paths), p.x(), p.y())
                 return
 
     def _tick(self):
-        if sys.platform != "win32":
-            return
         s = self.s
         if not s.enabled:
             return
@@ -140,7 +171,10 @@ class DragMonitor(QObject):
             return
         if not self.armed and self.shown is None:             # rising edge
             hwnd, cls = _fg_info()
-            self.armed = cls in EXPLORER_CLASSES
+            if sys.platform == "win32":
+                self.armed = cls in EXPLORER_CLASSES
+            else:
+                self.armed = _is_linux_fm_or_desktop(cls)
             self.origin = keys.cursor_pos()
             with self._lock:
                 self.sel = []
@@ -148,13 +182,14 @@ class DragMonitor(QObject):
                 curr_token = self.token
             if self.armed:
                 if self.timer.interval() != 16:
-                    self.timer.setInterval(16)          # 60 FPS only during genuine Explorer drag
-                threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
+                    self.timer.setInterval(16)
+                if sys.platform == "win32":
+                    threading.Thread(target=self._query, args=(hwnd, cls, curr_token), daemon=True).start()
             return
         if not self.armed and self.shown is None:
             return
         if self.timer.interval() != 16:
-            self.timer.setInterval(16)                  # maintain 60 FPS while dragging in Explorer
+            self.timer.setInterval(16)
         if keys.key_down(0x1B):                               # Esc
             self.suppressed = True
             self.cancelled.emit()
@@ -174,10 +209,6 @@ class DragMonitor(QObject):
         moved = max(abs(x - self.origin[0]), abs(y - self.origin[1]))
         with self._lock:
             current_sel = list(self.sel)
-        # On Windows 11 DWM composition, SysDragImage is absent.
-        # If selection is already resolved, trigger immediately at DRAG_THRESHOLD_PX (8px).
-        # If selection is still pending / empty, allow a brief grace movement (>= 24px)
-        # before triggering with fallback default options so the user is never blocked.
         is_drag = (_drag_image_present() or self.armed) and (
             (bool(current_sel) and moved >= DRAG_THRESHOLD_PX)
             or (moved >= 24)
@@ -185,5 +216,8 @@ class DragMonitor(QObject):
         if self.shown is None and not is_drag:
             return
         self.shown = kind
-        p = QCursor.pos()
-        self.trigger.emit(kind, current_sel, p.x(), p.y())
+        gx, gy = keys.cursor_pos()
+        if gx == 0 and gy == 0:
+            p = QCursor.pos()
+            gx, gy = p.x(), p.y()
+        self.trigger.emit(kind, current_sel, gx, gy)

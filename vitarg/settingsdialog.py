@@ -11,6 +11,23 @@ from .theme import Panel
 from .updater import check_github_update, UpdateDialog, UpdateCheckThread
 
 
+_QT_KEY_TO_VK: dict[int, int] = {
+    Qt.Key_Shift: 0x10,
+    Qt.Key_Control: 0x11,
+    Qt.Key_Alt: 0x12,
+    Qt.Key_AltGr: 0x12,
+    Qt.Key_Meta: 0x5B,
+    Qt.Key_Super_L: 0x5B,
+    Qt.Key_Super_R: 0x5C,
+    Qt.Key_Space: 0x20,
+    Qt.Key_CapsLock: 0x14,
+}
+for _c in range(ord("A"), ord("Z") + 1):
+    _QT_KEY_TO_VK[_c] = _c
+for _i in range(1, 13):
+    _QT_KEY_TO_VK[getattr(Qt, f"Key_F{_i}")] = 0x6F + _i
+
+
 class TriggerEditor(QGroupBox):
     def __init__(self, title, current, on_change):
         super().__init__(title)
@@ -60,6 +77,7 @@ class TriggerEditor(QGroupBox):
         self.on_change()
 
     def _start_rec(self):
+        keys.clear_qt_key_states()
         self.recording, self.seen = True, set()
         self.rec.setText("Press keys…")
 
@@ -83,6 +101,7 @@ class SettingsDialog(Panel):
     def __init__(self, settings: S.Settings, on_saved, parent=None):
         super().__init__("Vitarg Settings", 560, parent)
         self.s, self.on_saved = settings, on_saved
+        self.setFocusPolicy(Qt.StrongFocus)
         tabs = QTabWidget()
         # ---------------- triggers
         t = QWidget(); tl = QVBoxLayout(t)
@@ -128,7 +147,8 @@ class SettingsDialog(Panel):
         self.enabled = QCheckBox("Vitarg is active (watch for drags)"); self.enabled.setChecked(settings.enabled)
         self.prompt_rename = QCheckBox("Prompt to edit file name before converting"); self.prompt_rename.setChecked(settings.prompt_rename)
         self.sound = QCheckBox("Play a sound when a wheel option is highlighted"); self.sound.setChecked(settings.sound)
-        self.login = QCheckBox("Start Vitarg when I sign in to Windows"); self.login.setChecked(settings.launch_at_login)
+        os_label = "Windows" if sys.platform == "win32" else "Linux"
+        self.login = QCheckBox(f"Start Vitarg when I sign in to {os_label}"); self.login.setChecked(settings.launch_at_login)
         self.context_menu = QCheckBox("Add 'Convert with Vitarg' to context menu (right-click in file manager)"); self.context_menu.setChecked(settings.context_menu)
         self.auto_upd = QCheckBox("Automatically check for updates from GitHub"); self.auto_upd.setChecked(settings.auto_update)
         self.opacity = QSlider(Qt.Horizontal); self.opacity.setRange(30, 100); self.opacity.setValue(settings.opacity)
@@ -159,6 +179,24 @@ class SettingsDialog(Panel):
         self._autosave = QTimer(self); self._autosave.setSingleShot(True); self._autosave.setInterval(400)
         self._autosave.timeout.connect(self._flush_appearance)
         self._validate()
+
+    def keyPressEvent(self, e):
+        if not e.isAutoRepeat():
+            vk = _QT_KEY_TO_VK.get(e.key())
+            if vk:
+                keys.set_qt_key_state(vk, True)
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if not e.isAutoRepeat():
+            vk = _QT_KEY_TO_VK.get(e.key())
+            if vk:
+                keys.set_qt_key_state(vk, False)
+        super().keyReleaseEvent(e)
+
+    def hideEvent(self, e):
+        keys.clear_qt_key_states()
+        super().hideEvent(e)
 
     # ---------------- appearance (live, no Save needed) -----------------
     def _build_appearance_tab(self):
@@ -269,8 +307,6 @@ class SettingsDialog(Panel):
             self.folder.setText(d); self.r_dir.setChecked(True)
 
     def _poll(self):
-        if sys.platform != "win32":
-            return
         pressed = keys.pressed_set(set(S.VK))
         for ed in (self.conv, self.tools):
             ed.feed(pressed)

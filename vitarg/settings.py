@@ -35,9 +35,9 @@ RESERVED = [
     ({"CTRL"}, "A"), ({"CTRL"}, "S"), ({"CTRL"}, "W"), ({"ALT"}, "SPACE"), ({"CTRL"}, "SPACE"),
 ]
 DRAG_NOTES = {
-    "CTRL": "Ctrl during a drag makes Explorer copy files.",
-    "ALT": "Alt during a drag makes Explorer create shortcuts.",
-    "SHIFT": "Shift during a drag makes Explorer move files (Vitarg always copies).",
+    "CTRL": "Ctrl during a drag makes the file manager copy files.",
+    "ALT": "Alt during a drag makes the file manager create shortcuts/links.",
+    "SHIFT": "Shift during a drag makes the file manager move files (Vitarg always copies).",
 }
 
 
@@ -53,14 +53,14 @@ def validate(conv, tools) -> tuple[list[str], list[str]]:
         if len(extras) > 1:
             errors.append(f"{name}: use at most one non-modifier key.")
         if s == {"WIN"}:
-            errors.append(f"{name}: the Windows key alone opens the Start menu.")
+            errors.append(f"{name}: the Super/Windows key alone opens the system menu.")
         if not (s & set(MODIFIERS)) and extras:
             errors.append(f"{name}: add a modifier (Ctrl/Alt/Shift/Win) to the key.")
         for mods, key in RESERVED:
             if s == mods | {key}:
-                errors.append(f"{name}: {label(s)} is reserved by Windows or most applications.")
+                errors.append(f"{name}: {label(s)} is reserved by the OS or most applications.")
         if "WIN" in s and extras:
-            errors.append(f"{name}: Win+{extras[0]} is a Windows system shortcut.")
+            errors.append(f"{name}: Win+{extras[0]} is a system shortcut.")
     if c and t:
         if c == t:
             errors.append("Both wheels use the same trigger. Choose different combinations.")
@@ -184,8 +184,6 @@ def _get_linux_desktop_exec(extra_args: str = "") -> str:
 
     escaped_tokens = []
     for tok in tokens:
-        # According to the Freedesktop Desktop Entry Specification, double-quote arguments
-        # with spaces and escape \, ", $, and ` with a backslash.
         esc = tok.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
         if any(c in esc for c in " \t\n\"'()[]{}*?~<>|;&=$`"):
             escaped_tokens.append(f'"{esc}"')
@@ -274,8 +272,15 @@ def create_desktop_shortcut() -> bool:
             return False
     elif sys.platform.startswith("linux"):
         try:
-            exec_cmd = _get_linux_desktop_exec()
+            exec_cmd = _get_linux_desktop_exec("%F")
             icon_arg = _get_linux_icon_str()
+            mime_types = (
+                "image/png;image/jpeg;image/webp;image/bmp;image/tiff;image/svg+xml;image/heic;"
+                "audio/mpeg;audio/wav;audio/flac;audio/ogg;audio/aac;audio/mp4;audio/opus;"
+                "video/mp4;video/x-matroska;video/quicktime;video/x-msvideo;video/webm;"
+                "application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+                "text/plain;text/markdown;text/html;application/zip;application/x-tar;application/gzip;application/x-7z-compressed;"
+            )
             content = (
                 "[Desktop Entry]\n"
                 "Type=Application\n"
@@ -284,7 +289,8 @@ def create_desktop_shortcut() -> bool:
                 f"Exec={exec_cmd}\n"
                 f"Icon={icon_arg}\n"
                 "Terminal=false\n"
-                "Categories=Utility;\n"
+                "Categories=Utility;AudioVideo;Graphics;\n"
+                f"MimeType={mime_types}\n"
             )
             created = False
             desktop_dir = Path.home() / "Desktop"
@@ -353,6 +359,7 @@ def set_context_menu(enabled: bool) -> bool:
         try:
             shell_cmd = _get_linux_shell_cmd()
             desktop_exec = _get_linux_desktop_exec("%F")
+            desktop_tools_exec = _get_linux_desktop_exec("--tools %F")
             icon_arg = _get_linux_icon_str()
 
             script_dirs = [
@@ -387,13 +394,19 @@ def set_context_menu(enabled: bool) -> bool:
                 "[Desktop Entry]\n"
                 "Type=Service\n"
                 "ServiceTypes=KonqPopupMenu/Plugin\n"
+                "X-KDE-ServiceTypes=KonqPopupMenu/Plugin\n"
                 "MimeType=all/allfiles;\n"
-                "Actions=VitargConvert;\n"
+                "Actions=VitargConvert;VitargTools;\n"
                 "\n"
                 "[Desktop Action VitargConvert]\n"
                 "Name=Convert with Vitarg\n"
                 f"Icon={icon_arg}\n"
                 f"Exec={desktop_exec}\n"
+                "\n"
+                "[Desktop Action VitargTools]\n"
+                "Name=Vitarg Tools\n"
+                f"Icon={icon_arg}\n"
+                f"Exec={desktop_tools_exec}\n"
             )
 
             if enabled:
@@ -414,6 +427,10 @@ def set_context_menu(enabled: bool) -> bool:
                         kdir.mkdir(parents=True, exist_ok=True)
                         kpath = kdir / "vitarg.desktop"
                         kpath.write_text(kde_content, encoding="utf-8")
+                        try:
+                            kpath.chmod(0o755)
+                        except OSError:
+                            pass
                     except Exception:
                         pass
                 return True

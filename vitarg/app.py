@@ -1,6 +1,6 @@
 """Tray application: wires the drag monitor, wheel, dialogs and background jobs together."""
 from __future__ import annotations
-import json, os, sys, tempfile
+import json, os, sys, tempfile, threading
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-from . import engine, tools, theme, __version__
+from . import engine, tools, theme, keys, __version__
 from .dialogs import CropDialog, FormDialog, ActionConfirmDialog, ClipboardConvertDialog, PdfOrganizerDialog
 from .inspector import InspectorDialog
 from .jobs import JobWindow
@@ -38,7 +38,7 @@ def make_icon() -> QIcon:
 
 
 class DropTargetWidget(QWidget):
-    """Floating desktop widget allowing native drag-and-drop on Linux/Wayland."""
+    """Floating desktop widget allowing native drag-and-drop on Linux (X11 & Wayland)."""
     def __init__(self, ctl: Controller):
         super().__init__(None, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool)
         self.ctl = ctl
@@ -47,7 +47,12 @@ class DropTargetWidget(QWidget):
         self.setAcceptDrops(True)
         self.resize(72, 72)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setToolTip("Vitarg Drop Target\nDrag files here to convert\nDouble-click to choose files\nDrag to reposition")
+        self.setToolTip(
+            "Vitarg Drop Target\n"
+            "• Drag files here to Convert (hold Alt for Tools)\n"
+            "• Double-click to select files\n"
+            "• Right-click for options"
+        )
         scr = QGuiApplication.primaryScreen()
         if scr:
             geom = scr.availableGeometry()
@@ -89,7 +94,11 @@ class DropTargetWidget(QWidget):
         urls = e.mimeData().urls()
         paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
         if paths:
-            self.ctl.present_files(paths)
+            mods = e.modifiers()
+            uni = keys.universe_for(self.ctl.s.conv_trigger, self.ctl.s.tools_trigger)
+            pressed = keys.pressed_set(uni)
+            use_tools = bool(mods & Qt.AltModifier) or keys.matches(pressed, self.ctl.s.tools_trigger)
+            self.ctl.present_files(paths, kind="tools" if use_tools else "conv")
         e.acceptProposedAction()
 
     def mousePressEvent(self, e):
@@ -98,8 +107,10 @@ class DropTargetWidget(QWidget):
             e.accept()
         elif e.button() == Qt.RightButton:
             menu = QMenu(self)
+            menu.addAction("🔄 Convert Files…", lambda: self.ctl.select_files_dialog(kind="conv"))
+            menu.addAction("🛠️ Open Tools for Files…", lambda: self.ctl.select_files_dialog(kind="tools"))
             menu.addAction("📋 Convert Clipboard Image…", self.ctl.convert_clipboard_action)
-            menu.addAction("Select Files…", self.ctl.select_files_dialog)
+            menu.addSeparator()
             menu.addAction("Settings…", self.ctl.open_settings)
             menu.addAction("Hide Drop Target", lambda: self.ctl.act_drop.setChecked(False))
             menu.exec(e.globalPosition().toPoint())
@@ -114,7 +125,7 @@ class DropTargetWidget(QWidget):
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self.ctl.select_files_dialog()
+            self.ctl.select_files_dialog(kind="conv")
 
 
 class Controller:
@@ -138,8 +149,11 @@ class Controller:
         self.act_enabled.toggled.connect(self._toggle)
         self.info = QAction("", menu); self.info.setEnabled(False)
 
-        self.act_select = QAction("Select Files to Convert…", menu)
-        self.act_select.triggered.connect(self.select_files_dialog)
+        self.act_select = QAction("🔄 Select Files to Convert…", menu)
+        self.act_select.triggered.connect(lambda: self.select_files_dialog(kind="conv"))
+
+        self.act_tools = QAction("🛠️ Select Files for Tools…", menu)
+        self.act_tools.triggered.connect(lambda: self.select_files_dialog(kind="tools"))
 
         self.act_clip = QAction("📋 Convert Clipboard Image…", menu)
         self.act_clip.triggered.connect(self.convert_clipboard_action)
@@ -154,7 +168,7 @@ class Controller:
         st = QAction("Settings…", menu); st.triggered.connect(self.open_settings)
         upd = QAction("Check for Updates…", menu); upd.triggered.connect(lambda: self.check_for_updates(True))
         quit_ = QAction("Quit Vitarg", menu); quit_.triggered.connect(self.quit)
-        for a in (self.info, self.act_enabled, self.act_select, self.act_clip, self.act_drop, self.act_undo, st, upd):
+        for a in (self.info, self.act_enabled, self.act_select, self.act_tools, self.act_clip, self.act_drop, self.act_undo, st, upd):
             menu.addAction(a)
         menu.addSeparator(); menu.addAction(quit_)
         self.menu = menu
@@ -191,12 +205,13 @@ class Controller:
         try:
             payload = json.loads(data)
             action = payload.get("action")
+            kind = payload.get("kind", "conv")
             if action == "open":
                 files = payload.get("files", [])
                 if files:
-                    self.present_files(files)
+                    self.present_files(files, kind=kind)
             elif action == "select":
-                self.select_files_dialog(payload.get("initial_dir"))
+                self.select_files_dialog(payload.get("initial_dir"), kind=kind)
             elif action == "activate":
                 self.open_settings()
         except Exception:
@@ -229,18 +244,19 @@ class Controller:
             return c.x(), c.y()
         return pos.x(), pos.y()
 
-    def present_files(self, paths: list[str]):
+    def present_files(self, paths: list[str], kind: str = "conv"):
         valid = [str(Path(p)) for p in paths if os.path.exists(p)]
         if not valid:
             return
         gx, gy = self._get_invocation_pos()
-        self.wheel.present("conv", valid, gx, gy, interactive=True)
+        self.wheel.present(kind, valid, gx, gy, interactive=True)
 
-    def select_files_dialog(self, initial_dir: Optional[str] = None):
+    def select_files_dialog(self, initial_dir: Optional[str] = None, kind: str = "conv"):
         start_dir = initial_dir if (initial_dir and os.path.isdir(initial_dir)) else ""
-        files, _ = QFileDialog.getOpenFileNames(None, "Select Files to Convert with Vitarg", start_dir)
+        title = "Select Files for Vitarg Tools" if kind == "tools" else "Select Files to Convert with Vitarg"
+        files, _ = QFileDialog.getOpenFileNames(None, title, start_dir)
         if files:
-            self.present_files(files)
+            self.present_files(files, kind=kind)
 
     # -------------------------------------------------------------
     def refresh_info(self):
@@ -403,6 +419,12 @@ class Controller:
 def selftest() -> int:
     """Used by the build script: proves the frozen bundle has its libraries and external tools."""
     report = Path(tempfile.gettempdir()) / "vitarg-selftest.txt"     # windowed exe has no console
+    if sys.platform != "win32":
+        try:
+            from . import fetcher
+            fetcher.purge_windows_binaries()
+        except Exception:
+            pass
     missing = [t for t in ("ffmpeg", "ffprobe", "pandoc") if not engine.find_tool(t)]
     try:
         import fitz, docx, PIL, PySide6, py7zr, urllib.request  # noqa
@@ -421,6 +443,8 @@ def main():
 
     # Extract CLI arguments
     select_mode = "--select" in sys.argv
+    tools_mode = "--tools" in sys.argv
+    kind = "tools" if tools_mode else "conv"
     cli_files = []
     initial_dir = None
     for arg in sys.argv[1:]:
@@ -442,9 +466,9 @@ def main():
     sock.connectToServer(server_name)
     if sock.waitForConnected(200):
         if cli_files:
-            msg = json.dumps({"action": "open", "files": cli_files}).encode("utf-8")
+            msg = json.dumps({"action": "open", "files": cli_files, "kind": kind}).encode("utf-8")
         elif select_mode or initial_dir:
-            msg = json.dumps({"action": "select", "initial_dir": initial_dir or ""}).encode("utf-8")
+            msg = json.dumps({"action": "select", "initial_dir": initial_dir or "", "kind": kind}).encode("utf-8")
         else:
             msg = json.dumps({"action": "activate"}).encode("utf-8")
         sock.write(msg)
@@ -465,12 +489,24 @@ def main():
     ctl = Controller(app, settings)
     app.ctl = ctl
 
-    try:
-        import threading
-        from .updater import clean_stale_temp_installers
-        threading.Thread(target=clean_stale_temp_installers, daemon=True).start()
-    except Exception:
-        pass
+    def _bg_housekeeping():
+        try:
+            from .updater import clean_stale_temp_installers
+            clean_stale_temp_installers()
+        except Exception:
+            pass
+        if sys.platform != "win32":
+            try:
+                from . import fetcher
+                fetcher.purge_windows_binaries()
+                # Proactively ensure native Linux tools are ready in background if missing from system PATH
+                for tool_name in ("ffmpeg", "ffprobe", "pandoc"):
+                    if not engine.find_tool(tool_name):
+                        fetcher.ensure_linux_tool(tool_name)
+            except Exception:
+                pass
+
+    threading.Thread(target=_bg_housekeeping, daemon=True).start()
 
     if getattr(settings, "context_menu", True):
         try:
@@ -489,8 +525,8 @@ def main():
         QTimer.singleShot(600, ctl.open_settings)       # first run: show where the triggers are configured
 
     if cli_files:
-        QTimer.singleShot(250, lambda: ctl.present_files(cli_files))
+        QTimer.singleShot(250, lambda: ctl.present_files(cli_files, kind=kind))
     elif select_mode or initial_dir:
-        QTimer.singleShot(250, lambda: ctl.select_files_dialog(initial_dir))
+        QTimer.singleShot(250, lambda: ctl.select_files_dialog(initial_dir, kind=kind))
 
     return app.exec()

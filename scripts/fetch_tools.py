@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Cross-platform tool fetcher for Vitarg (FFmpeg, FFprobe, Pandoc).
 Downloads standalone, statically linked binaries for Linux or Windows into the tools/ directory.
+On Linux, strictly avoids and purges any Windows .exe / PE binaries.
 """
 import argparse
-import io
 import json
 import os
+import platform
 import shutil
 import stat
 import sys
@@ -16,13 +17,52 @@ import zipfile
 from pathlib import Path
 
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+WINDOWS_EXTENSIONS = (".exe", ".dll", ".bat", ".cmd", ".msi", ".ps1", ".vbs")
 
 
 def log(msg: str) -> None:
     print(f"[fetch_tools] {msg}", flush=True)
 
 
-def download_file(url: str, dest_path: Path) -> None:
+def get_linux_arch() -> str:
+    mach = platform.machine().lower()
+    if mach in ("aarch64", "arm64", "armv8b", "armv8l"):
+        return "arm64"
+    return "amd64"
+
+
+def is_windows_pe_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.suffix.lower() in WINDOWS_EXTENSIONS:
+        return True
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+def is_valid_linux_binary(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() in WINDOWS_EXTENSIONS:
+        return False
+    try:
+        if path.stat().st_size < 64:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(4)
+        if head[:2] == b"MZ":
+            return False
+        return head == b"\x7fELF" or head[:2] == b"#!"
+    except OSError:
+        return False
+
+
+def download_file(url: str, dest_path: Path, target_platform: str = "linux") -> None:
+    if target_platform == "linux":
+        low_url = url.lower().split("?", 1)[0]
+        if low_url.endswith(WINDOWS_EXTENSIONS):
+            raise RuntimeError(f"Refusing to download Windows executable for Linux target: {url}")
     log(f"Downloading: {url} -> {dest_path.name}")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=120) as resp, open(dest_path, "wb") as out:
@@ -52,37 +92,79 @@ def make_executable(p: Path) -> None:
 
 
 def fetch_linux_tools(tools_dir: Path, tmp_dir: Path) -> None:
-    """Fetch standalone, statically linked Linux x86_64 binaries for FFmpeg, FFprobe, and Pandoc."""
+    """Fetch standalone, statically linked Linux ELF binaries for FFmpeg, FFprobe, and Pandoc."""
     tools_dir.mkdir(parents=True, exist_ok=True)
     lic_dir = tools_dir / "licenses"
     lic_dir.mkdir(parents=True, exist_ok=True)
 
-    # Strictly purge any Windows binaries from tools_dir when targeting Linux
+    # Strictly purge any Windows binaries (.exe or PE 'MZ' files) from tools_dir when targeting Linux
     for item in tools_dir.iterdir():
-        if item.is_file() and item.suffix.lower() in (".exe", ".bat", ".cmd"):
+        if item.is_file() and is_windows_pe_file(item):
             item.unlink(missing_ok=True)
             log(f"Removed Windows artifact: {item.name}")
 
     ffmpeg_bin = tools_dir / "ffmpeg"
     ffprobe_bin = tools_dir / "ffprobe"
     pandoc_bin = tools_dir / "pandoc"
+    arch = get_linux_arch()
 
     # 1. FFmpeg & FFprobe (BtbN static GPL build, with fallback to John Van Sickle)
-    if not (ffmpeg_bin.exists() and ffprobe_bin.exists()):
+    if not (is_valid_linux_binary(ffmpeg_bin) and is_valid_linux_binary(ffprobe_bin)):
         ffmpeg_archive = tmp_dir / "ffmpeg-linux.tar.xz"
-        urls = [
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
-            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-        ]
+        urls = []
+        token = "linuxarm64" if arch == "arm64" else "linux64"
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+                headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for a in data.get("assets", []):
+                    name = a.get("name", "").lower()
+                    if (
+                        token in name
+                        and "gpl" in name
+                        and "shared" not in name
+                        and "lgpl" not in name
+                        and name.endswith(".tar.xz")
+                    ):
+                        dl_url = a.get("browser_download_url")
+                        if dl_url:
+                            urls.append(dl_url)
+                            break
+        except Exception as e:
+            log(f"GitHub API query failed for FFmpeg: {e}")
+
+        if arch == "arm64":
+            urls.extend([
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+            ])
+        else:
+            urls.extend([
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+            ])
+
+        seen = set()
+        unique_urls = [u for u in urls if not (u in seen or seen.add(u))]
+
         success = False
-        for url in urls:
+        for url in unique_urls:
             try:
-                download_file(url, ffmpeg_archive)
+                if ffmpeg_archive.exists():
+                    ffmpeg_archive.unlink(missing_ok=True)
+                download_file(url, ffmpeg_archive, target_platform="linux")
                 log(f"Extracting FFmpeg from {ffmpeg_archive.name}...")
                 with tarfile.open(ffmpeg_archive, "r:xz") as tf:
                     for member in tf.getmembers():
+                        if not member.isfile():
+                            continue
                         base = os.path.basename(member.name)
-                        if base in ("ffmpeg", "ffprobe"):
+                        if base.lower().endswith(WINDOWS_EXTENSIONS):
+                            continue
+                        if base in ("ffmpeg", "ffprobe") and member.size > 100_000:
                             f_obj = tf.extractfile(member)
                             if f_obj:
                                 target = tools_dir / base
@@ -93,65 +175,82 @@ def fetch_linux_tools(tools_dir: Path, tmp_dir: Path) -> None:
                             f_obj = tf.extractfile(member)
                             if f_obj:
                                 (lic_dir / "FFmpeg-LICENSE.txt").write_bytes(f_obj.read())
-                if ffmpeg_bin.exists() and ffprobe_bin.exists():
+                if is_valid_linux_binary(ffmpeg_bin) and is_valid_linux_binary(ffprobe_bin):
                     success = True
                     break
             except Exception as e:
                 log(f"Failed to fetch/extract from {url}: {e}")
                 if ffmpeg_archive.exists():
-                    ffmpeg_archive.unlink()
+                    ffmpeg_archive.unlink(missing_ok=True)
 
         if not success:
-            raise RuntimeError("Failed to download usable Linux static FFmpeg/FFprobe binaries.")
+            raise RuntimeError("Failed to download usable Linux static FFmpeg/FFprobe ELF binaries.")
 
-    # 2. Pandoc (official standalone static Linux amd64 tarball)
-    if not pandoc_bin.exists():
+    # 2. Pandoc (official standalone static Linux tarball)
+    if not is_valid_linux_binary(pandoc_bin):
         pandoc_archive = tmp_dir / "pandoc-linux.tar.gz"
-        pandoc_url = None
+        arch_token = f"linux-{arch}"
+        pandoc_urls = []
         try:
-            req = urllib.request.Request("https://api.github.com/repos/jgm/pandoc/releases/latest",
-                                         headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(
+                "https://api.github.com/repos/jgm/pandoc/releases/latest",
+                headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+            )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 for a in data.get("assets", []):
-                    name = a.get("name", "")
-                    if "linux-amd64" in name and name.endswith(".tar.gz"):
-                        pandoc_url = a.get("browser_download_url")
-                        break
+                    name = a.get("name", "").lower()
+                    if arch_token in name and name.endswith(".tar.gz") and not name.endswith(WINDOWS_EXTENSIONS):
+                        dl_url = a.get("browser_download_url")
+                        if dl_url:
+                            pandoc_urls.append(dl_url)
+                            break
         except Exception as e:
             log(f"GitHub API query failed for Pandoc: {e}")
 
-        if not pandoc_url:
-            pandoc_url = "https://github.com/jgm/pandoc/releases/download/3.14/pandoc-3.14-linux-amd64.tar.gz"
+        pandoc_urls.extend([
+            f"https://github.com/jgm/pandoc/releases/download/3.14/pandoc-3.14-linux-{arch}.tar.gz",
+            f"https://github.com/jgm/pandoc/releases/download/3.6.4/pandoc-3.6.4-linux-{arch}.tar.gz",
+        ])
 
-        try:
-            download_file(pandoc_url, pandoc_archive)
-            log(f"Extracting Pandoc from {pandoc_archive.name}...")
-            with tarfile.open(pandoc_archive, "r:gz") as tf:
-                for member in tf.getmembers():
-                    base = os.path.basename(member.name)
-                    if base == "pandoc":
-                        f_obj = tf.extractfile(member)
-                        if f_obj:
-                            pandoc_bin.write_bytes(f_obj.read())
-                            make_executable(pandoc_bin)
-                            log(f"Extracted pandoc -> {pandoc_bin}")
-                    elif "COPYING" in base or "LICENSE" in base:
-                        f_obj = tf.extractfile(member)
-                        if f_obj:
-                            (lic_dir / "Pandoc-COPYING.txt").write_bytes(f_obj.read())
-        except Exception as e:
-            log(f"Failed to fetch/extract Pandoc: {e}")
-            if pandoc_archive.exists():
-                pandoc_archive.unlink()
+        seen = set()
+        unique_pandoc_urls = [u for u in pandoc_urls if not (u in seen or seen.add(u))]
+
+        for pandoc_url in unique_pandoc_urls:
+            try:
+                if pandoc_archive.exists():
+                    pandoc_archive.unlink(missing_ok=True)
+                download_file(pandoc_url, pandoc_archive, target_platform="linux")
+                log(f"Extracting Pandoc from {pandoc_archive.name}...")
+                with tarfile.open(pandoc_archive, "r:gz") as tf:
+                    for member in tf.getmembers():
+                        if not member.isfile():
+                            continue
+                        base = os.path.basename(member.name)
+                        if base == "pandoc" and member.size > 100_000:
+                            f_obj = tf.extractfile(member)
+                            if f_obj:
+                                pandoc_bin.write_bytes(f_obj.read())
+                                make_executable(pandoc_bin)
+                                log(f"Extracted pandoc -> {pandoc_bin}")
+                        elif "COPYING" in base or "LICENSE" in base:
+                            f_obj = tf.extractfile(member)
+                            if f_obj:
+                                (lic_dir / "Pandoc-COPYING.txt").write_bytes(f_obj.read())
+                if is_valid_linux_binary(pandoc_bin):
+                    break
+            except Exception as e:
+                log(f"Failed to fetch/extract Pandoc from {pandoc_url}: {e}")
+                if pandoc_archive.exists():
+                    pandoc_archive.unlink(missing_ok=True)
 
     # Final verification
     for name in ("ffmpeg", "ffprobe", "pandoc"):
         p = tools_dir / name
-        if not p.exists() or p.stat().st_size == 0:
-            raise RuntimeError(f"Tool {name} is missing or empty in {tools_dir}")
+        if not is_valid_linux_binary(p):
+            raise RuntimeError(f"Tool {name} is missing, empty, or not a valid Linux ELF binary in {tools_dir}")
         make_executable(p)
-        log(f"Verified Linux tool: {p} ({p.stat().st_size // (1024*1024)} MB)")
+        log(f"Verified Linux ELF tool: {p} ({p.stat().st_size // (1024*1024)} MB)")
 
 
 def fetch_windows_tools(tools_dir: Path, tmp_dir: Path) -> None:
@@ -167,7 +266,7 @@ def fetch_windows_tools(tools_dir: Path, tmp_dir: Path) -> None:
     if not (ffmpeg_bin.exists() and ffprobe_bin.exists()):
         zip_path = tmp_dir / "ffmpeg-win.zip"
         url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-        download_file(url, zip_path)
+        download_file(url, zip_path, target_platform="windows")
         log("Extracting Windows FFmpeg...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             for item in zf.namelist():
@@ -181,7 +280,7 @@ def fetch_windows_tools(tools_dir: Path, tmp_dir: Path) -> None:
     if not pandoc_bin.exists():
         zip_path = tmp_dir / "pandoc-win.zip"
         url = "https://github.com/jgm/pandoc/releases/download/3.14/pandoc-3.14-windows-x86_64.zip"
-        download_file(url, zip_path)
+        download_file(url, zip_path, target_platform="windows")
         log("Extracting Windows Pandoc...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             for item in zf.namelist():
@@ -206,18 +305,24 @@ def main():
                         help="Target OS platform (default: detected OS)")
     parser.add_argument("--dest", type=Path, default=None,
                         help="Destination directory (default: <repo_root>/tools)")
+    parser.add_argument("--allow-cross-win", action="store_true",
+                        help="Explicitly allow downloading Windows .exe tools while running on Linux")
     args = parser.parse_args()
+
+    target_platform = args.platform
+    if sys.platform != "win32" and target_platform == "windows" and not args.allow_cross_win:
+        log("Running on Linux: overriding target platform to 'linux' to avoid downloading .exe files.")
+        target_platform = "linux"
 
     repo_root = Path(__file__).resolve().parent.parent
     tools_dir = args.dest or (repo_root / "tools")
-    tmp_dir = Path(tempfile.gettempdir()) / f"vitarg_fetch_{args.platform}"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"vitarg_fetch_{target_platform}_"))
 
-    log(f"Target platform: {args.platform}")
+    log(f"Target platform: {target_platform}")
     log(f"Destination:     {tools_dir}")
 
     try:
-        if args.platform == "linux":
+        if target_platform == "linux":
             fetch_linux_tools(tools_dir, tmp_dir)
         else:
             fetch_windows_tools(tools_dir, tmp_dir)

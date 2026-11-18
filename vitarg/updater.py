@@ -1,6 +1,9 @@
-"""GitHub Releases auto-updater for Vitarg: checks for updates, downloads setup, and launches installer."""
+"""GitHub Releases auto-updater for Vitarg: checks for updates, downloads setup, and launches installer.
+On Linux, strictly ignores Windows .exe / .msi installers and Windows delta .zip archives,
+and only selects native Linux packages (.tar.gz, .AppImage, .deb, .rpm).
+"""
 from __future__ import annotations
-import hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
+import hashlib, json, os, platform, re, shutil, stat, subprocess, sys, tarfile, tempfile, threading, time, zipfile
 from pathlib import Path
 from typing import Optional
 import urllib.request
@@ -10,6 +13,7 @@ from . import engine
 
 GITHUB_REPOS = ["nercessery/Vitarg"]
 USER_AGENT = "Vitarg-App/1.0.5"
+WINDOWS_EXTS = (".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".dll")
 
 try:
     from PySide6.QtCore import Qt, QThread, Signal, QTimer
@@ -28,6 +32,33 @@ except ImportError:
             def emit(self, *a, **k): pass
         return _Sig()
     class Panel: pass
+
+
+def _is_windows_only_asset(name: str) -> bool:
+    """Return True if a GitHub release asset filename belongs to Windows."""
+    n = name.lower().strip()
+    if n.endswith(WINDOWS_EXTS):
+        return True
+    if any(tok in n for tok in ("win32", "win64", "windows", "-setup", "_setup", "setup.")):
+        return True
+    # Vitarg-app.zip / Vitarg-update.zip without 'linux' are Windows delta zips built by build.ps1
+    if n in ("vitarg-app.zip", "vitarg-update.zip") or (n.endswith("-app.zip") and "linux" not in n):
+        return True
+    return False
+
+
+def _is_linux_compatible_asset(name: str) -> bool:
+    """Return True if a GitHub release asset filename is a valid Linux distribution package."""
+    n = name.lower().strip()
+    if _is_windows_only_asset(n):
+        return False
+    if n.endswith((".dmg", ".pkg")) or any(tok in n for tok in ("macos", "darwin", "osx")):
+        return False
+    if "linux" in n and n.endswith((".tar.gz", ".tgz", ".tar.xz", ".appimage", ".deb", ".rpm", ".zip")):
+        return True
+    if n.endswith((".tar.gz", ".tgz", ".tar.xz", ".appimage", ".deb", ".rpm")):
+        return True
+    return False
 
 
 def parse_semver(tag: str) -> tuple[int, ...]:
@@ -71,6 +102,8 @@ def generate_manifest(app_root: Path, version: str = "1.0.5") -> dict:
         rel = str(item.relative_to(app_root)).replace("\\", "/")
         if any(part.startswith((".", "__pycache__")) for part in rel.split("/")):
             continue
+        if sys.platform != "win32" and item.suffix.lower() in WINDOWS_EXTS:
+            continue
         try:
             sz = item.stat().st_size
             sha = compute_file_sha256(item)
@@ -81,16 +114,7 @@ def generate_manifest(app_root: Path, version: str = "1.0.5") -> dict:
 
 
 def diff_local_with_manifest(app_root: Path, manifest: dict) -> dict:
-    """Compare local installed files with remote release manifest.
-
-    Returns:
-        {
-            "tools_intact": bool,
-            "to_update": list[str],
-            "unchanged": list[str],
-            "stale_files": list[str],
-        }
-    """
+    """Compare local installed files with remote release manifest."""
     app_root = Path(app_root).resolve()
     files_map = manifest.get("files", {})
 
@@ -110,6 +134,8 @@ def diff_local_with_manifest(app_root: Path, manifest: dict) -> dict:
     to_update = []
     unchanged = []
     for rel_str, meta in files_map.items():
+        if sys.platform != "win32" and rel_str.lower().endswith(WINDOWS_EXTS):
+            continue
         lp = app_root / rel_str
         if not lp.exists():
             to_update.append(rel_str)
@@ -145,15 +171,18 @@ def diff_local_with_manifest(app_root: Path, manifest: dict) -> dict:
 
 
 def clean_stale_temp_installers(max_age_seconds: int = 1800) -> int:
-    """Clean up old downloaded installer executables and zip packages from %TEMP%."""
+    """Clean up old downloaded installer executables and packages from temp directory.
+    On Linux, immediately removes any stray .exe files regardless of age.
+    """
     temp_dir = Path(tempfile.gettempdir())
     now = time.time()
     removed = 0
-    patterns = ("Vitarg-Setup*.exe", "Vitarg-*.zip", "vitarg_staged*")
+    patterns = ("Vitarg-Setup*.exe", "Vitarg*.exe", "Vitarg-*.zip", "Vitarg-*.tar.gz", "vitarg_staged*")
     for pat in patterns:
         for p in temp_dir.glob(pat):
             try:
-                if (now - p.stat().st_mtime) > max_age_seconds:
+                is_exe_on_linux = (sys.platform != "win32" and p.suffix.lower() in WINDOWS_EXTS)
+                if is_exe_on_linux or (now - p.stat().st_mtime) > max_age_seconds:
                     if p.is_dir():
                         shutil.rmtree(p, ignore_errors=True)
                     else:
@@ -199,41 +228,56 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                             app_zip_asset = None
                             setup_asset = None
 
-                            target_ext = ".exe" if sys.platform == "win32" else ".tar.gz"
-                            for a in assets:
-                                name = a.get("name", "").lower()
-                                if name == "manifest.json":
-                                    manifest_asset = a
-                                elif name in ("vitarg-app.zip", "vitarg-update.zip") or name.endswith("-app.zip"):
-                                    app_zip_asset = a
-                                elif ("setup" in name or "vitarg" in name or "linux" in name) and name.endswith(target_ext):
-                                    setup_asset = a
-
-                            if not setup_asset and assets:
+                            if sys.platform == "win32":
                                 for a in assets:
-                                    if a.get("name", "").lower().endswith(target_ext):
+                                    name = a.get("name", "").lower()
+                                    if name == "manifest.json":
+                                        manifest_asset = a
+                                    elif name in ("vitarg-app.zip", "vitarg-update.zip") or name.endswith("-app.zip"):
+                                        app_zip_asset = a
+                                    elif ("setup" in name or "vitarg" in name) and name.endswith(".exe"):
+                                        setup_asset = a
+                                if not setup_asset:
+                                    for a in assets:
+                                        if a.get("name", "").lower().endswith(".exe"):
+                                            setup_asset = a
+                                            break
+
+                                has_local_tools = bool(engine.find_tool("ffmpeg") and engine.find_tool("ffprobe"))
+                                is_delta = False
+                                chosen_asset = None
+                                if app_zip_asset and has_local_tools:
+                                    is_delta = True
+                                    chosen_asset = app_zip_asset
+                                elif setup_asset:
+                                    chosen_asset = setup_asset
+                                elif app_zip_asset:
+                                    chosen_asset = app_zip_asset
+                            else:
+                                # Linux: strictly filter out any Windows .exe / .msi / Windows delta zip assets
+                                mach = platform.machine().lower()
+                                is_arm = mach in ("aarch64", "arm64")
+                                arch_tokens = ("arm64", "aarch64") if is_arm else ("x86_64", "amd64", "linux64")
+                                linux_candidates = []
+                                for a in assets:
+                                    name = a.get("name", "").lower()
+                                    if name == "manifest.json":
+                                        manifest_asset = a
+                                        continue
+                                    if _is_linux_compatible_asset(name):
+                                        linux_candidates.append(a)
+
+                                # Prefer architecture-matched .tar.gz or .AppImage
+                                for a in linux_candidates:
+                                    n = a.get("name", "").lower()
+                                    if any(tok in n for tok in arch_tokens) and n.endswith((".tar.gz", ".tgz", ".appimage")):
                                         setup_asset = a
                                         break
-                            if not setup_asset and assets and sys.platform != "win32":
-                                for a in assets:
-                                    if a.get("name", "").lower().endswith((".tar.gz", ".zip", ".appimage")):
-                                        setup_asset = a
-                                        break
+                                if not setup_asset and linux_candidates:
+                                    setup_asset = linux_candidates[0]
 
-                            # Check local tools
-                            has_local_tools = bool(engine.find_tool("ffmpeg") and engine.find_tool("ffprobe"))
-
-                            is_delta = False
-                            chosen_asset = None
-                            if sys.platform == "win32" and app_zip_asset and has_local_tools:
-                                is_delta = True
-                                chosen_asset = app_zip_asset
-                            elif setup_asset:
+                                is_delta = False
                                 chosen_asset = setup_asset
-                            elif app_zip_asset:
-                                chosen_asset = app_zip_asset
-                            elif assets:
-                                chosen_asset = assets[0]
 
                             if chosen_asset:
                                 return {
@@ -249,7 +293,8 @@ def check_github_update_detailed(current_version: str) -> tuple[Optional[dict], 
                                     "setup_url": setup_asset.get("browser_download_url") if setup_asset else None,
                                 }, f"New release {tag} available!"
                             else:
-                                return None, f"Release {tag} found, but release asset ({target_ext}) is still compiling."
+                                expected = ".exe" if sys.platform == "win32" else "Linux (.tar.gz / .AppImage)"
+                                return None, f"Release {tag} found, but no {expected} package is attached to this release."
                         else:
                             return None, f"You are up to date (Latest release: {tag})."
             except urllib.error.HTTPError as e:
@@ -303,6 +348,13 @@ class DownloadThread(QThread):
         self._cancelled = True
 
     def run(self):
+        if sys.platform != "win32":
+            low_fn = self.filename.lower()
+            low_url = self.url.lower().split("?", 1)[0]
+            if low_fn.endswith(WINDOWS_EXTS) or low_url.endswith(WINDOWS_EXTS) or _is_windows_only_asset(low_fn):
+                self.failed.emit("Blocked Windows .exe package download on Linux.")
+                return
+
         target = Path(tempfile.gettempdir()) / self.filename
         try:
             headers = {"User-Agent": USER_AGENT}
@@ -344,7 +396,8 @@ class UpdateDialog(Panel):
         if self.info.get("is_delta"):
             delta_tag = f'<br><span style="color: #34D399; font-weight: bold;">⚡ Smart Delta Update ({mb:.1f} MB) — existing tools preserved, fast update</span>'
         else:
-            delta_tag = f'<br><span style="color: #60A5FA;">📦 Full Package ({mb:.1f} MB)</span>'
+            pkg_name = self.info.get("asset_name") or ("Linux Package" if sys.platform != "win32" else "Full Package")
+            delta_tag = f'<br><span style="color: #60A5FA;">📦 {pkg_name} ({mb:.1f} MB)</span>'
 
         ver_label = QLabel(f"A new version of Vitarg is available: <b>{release_info['version']}</b> (Current: {current_version}){delta_tag}")
         ver_label.setWordWrap(True)
@@ -429,13 +482,71 @@ class UpdateDialog(Panel):
             self.status.setText(f"Downloading: {mb_dl:.1f} MB...")
 
     def _on_finished(self, downloaded_path: str):
+        self.bar.setValue(100)
         if sys.platform == "win32":
             self.status.setText("Download complete! Applying update...")
-            self.bar.setValue(100)
             QTimer.singleShot(500, lambda: self._apply_update_and_exit(downloaded_path))
         else:
-            self.status.setText(f"Download complete!\nSaved to: {downloaded_path}")
-            self.bar.setValue(100)
+            dl_p = Path(downloaded_path)
+            target_dir = engine.app_dir()
+            can_write = os.access(target_dir, os.W_OK)
+            if can_write and dl_p.name.lower().endswith((".tar.gz", ".tgz")):
+                self.status.setText("Download complete! Extracting Linux update...")
+                QTimer.singleShot(400, lambda: self._apply_linux_update(dl_p, target_dir))
+            else:
+                if dl_p.suffix.lower() == ".appimage":
+                    try:
+                        dl_p.chmod(dl_p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    except OSError:
+                        pass
+                self.status.setText(f"Download complete!\nSaved to: {downloaded_path}")
+                self.btn_later.setText("Close")
+                self.btn_update.setText("Open Folder")
+                self.btn_update.setEnabled(True)
+                try:
+                    self.btn_update.clicked.disconnect()
+                except Exception:
+                    pass
+                self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(dl_p.parent)]))
+
+    def _apply_linux_update(self, dl_p: Path, target_dir: Path):
+        """Extract Linux .tar.gz update, strip any .exe files, copy over target_dir, and restart."""
+        staging_dir = Path(tempfile.mkdtemp(prefix="vitarg_linux_upd_"))
+        try:
+            with tarfile.open(dl_p, "r:gz") as tf:
+                for member in tf.getmembers():
+                    if member.name.startswith("/") or ".." in member.name.split("/"):
+                        continue
+                    if member.name.lower().endswith(WINDOWS_EXTS):
+                        continue
+                    tf.extract(member, staging_dir)
+
+            # Locate inner Vitarg directory if wrapped in top-level folder
+            src_root = staging_dir / "Vitarg" if (staging_dir / "Vitarg").is_dir() else staging_dir
+            for item in src_root.rglob("*"):
+                if item.is_file() and item.suffix.lower() in WINDOWS_EXTS:
+                    item.unlink(missing_ok=True)
+
+            sh_path = Path(tempfile.gettempdir()) / "vitarg_apply_linux_update.sh"
+            exe_cmd = f'"{target_dir / "Vitarg"}"' if (target_dir / "Vitarg").exists() else f'"{sys.executable}" "{target_dir / "run_vitarg.py"}"'
+            sh_content = (
+                "#!/bin/bash\n"
+                "sleep 1\n"
+                f'cp -rf "{src_root}/"* "{target_dir}/" 2>/dev/null || true\n'
+                f'find "{target_dir}" -name "*.exe" -delete 2>/dev/null || true\n'
+                f'chmod +x "{target_dir}/Vitarg" 2>/dev/null || true\n'
+                f'chmod -R +x "{target_dir}/tools" 2>/dev/null || true\n'
+                f'rm -rf "{staging_dir}" "{dl_p}"\n'
+                f"nohup {exe_cmd} >/dev/null 2>&1 &\n"
+            )
+            sh_path.write_text(sh_content, encoding="utf-8")
+            sh_path.chmod(0o755)
+            subprocess.Popen(["/bin/bash", str(sh_path)], start_new_session=True)
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().quit()
+        except Exception as e:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            self.status.setText(f"Downloaded to {dl_p} (Auto-extract skipped: {e})")
             self.btn_later.setText("Close")
             self.btn_update.setText("Open Folder")
             self.btn_update.setEnabled(True)
@@ -443,7 +554,7 @@ class UpdateDialog(Panel):
                 self.btn_update.clicked.disconnect()
             except Exception:
                 pass
-            self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(Path(downloaded_path).parent)]))
+            self.btn_update.clicked.connect(lambda: subprocess.Popen(["xdg-open", str(dl_p.parent)]))
 
     def _apply_update_and_exit(self, downloaded_path: str):
         dl_p = Path(downloaded_path)

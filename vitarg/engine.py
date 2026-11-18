@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 NOWIN = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_WINDOW
+WINDOWS_EXTS = (".exe", ".dll", ".bat", ".cmd", ".msi", ".ps1", ".vbs")
 
 
 class ConversionError(Exception):
@@ -27,23 +28,72 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def find_tool(name: str) -> Optional[str]:
-    # On Windows, look for .exe; on Linux/macOS strictly look for extensionless Unix binary
-    clean_name = name.removesuffix(".exe") if sys.platform != "win32" else name
-    exe = clean_name if sys.platform != "win32" else (clean_name + ("" if clean_name.endswith(".exe") else ".exe"))
+def _is_valid_tool_binary(p: Path) -> bool:
+    """Validate that p is an executable binary valid for the current OS (never a Windows .exe/PE on Linux)."""
+    if not p.is_file():
+        return False
+    if sys.platform != "win32":
+        if p.suffix.lower() in WINDOWS_EXTS:
+            return False
+        try:
+            if p.stat().st_size < 64:
+                return False
+            with open(p, "rb") as f:
+                head = f.read(4)
+            if head[:2] == b"MZ":
+                return False
+            if head != b"\x7fELF" and head[:2] != b"#!":
+                return False
+        except OSError:
+            return False
+    return True
 
-    candidates = [
-        app_dir() / "tools" / exe,
-        Path(sys.executable).parent / "tools" / exe,
-        Path(sys.executable).parent / "_internal" / "tools" / exe,
-        app_dir() / exe,
+
+def find_tool(name: str) -> Optional[str]:
+    # On Windows, look for .exe; on Linux/macOS strictly look for extensionless Unix ELF binary
+    clean_name = name
+    if sys.platform != "win32":
+        for ext in WINDOWS_EXTS:
+            if clean_name.lower().endswith(ext):
+                clean_name = clean_name[: -len(ext)]
+                break
+        exe = clean_name
+    else:
+        exe = clean_name if clean_name.lower().endswith(".exe") else f"{clean_name}.exe"
+
+    tool_dirs = [
+        app_dir() / "tools",
+        Path(sys.executable).parent / "tools",
+        Path(sys.executable).parent / "_internal" / "tools",
+        app_dir(),
     ]
     if sys.platform != "win32":
-        candidates.append(Path.home() / ".local" / "share" / "vitarg" / "tools" / exe)
-        candidates.append(Path.home() / ".vitarg" / "tools" / exe)
+        tool_dirs.append(Path.home() / ".local" / "share" / "vitarg" / "tools")
+        tool_dirs.append(Path.home() / ".vitarg" / "tools")
+
+    # On Linux, purge any stray .exe or Windows PE files sitting in local tools/ folders
+    if sys.platform != "win32":
+        for td in tool_dirs:
+            if td.name == "tools" and td.is_dir():
+                try:
+                    for item in td.iterdir():
+                        if item.is_file() and (item.suffix.lower() in WINDOWS_EXTS or not _is_valid_tool_binary(item)):
+                            if item.suffix.lower() in WINDOWS_EXTS:
+                                item.unlink(missing_ok=True)
+                            else:
+                                try:
+                                    with open(item, "rb") as f:
+                                        if f.read(2) == b"MZ":
+                                            item.unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                except OSError:
+                    pass
+
+    candidates = [td / exe for td in tool_dirs]
 
     for p in candidates:
-        if p.is_file():
+        if _is_valid_tool_binary(p):
             if sys.platform != "win32":
                 try:
                     if not os.access(p, os.X_OK):
@@ -53,7 +103,7 @@ def find_tool(name: str) -> Optional[str]:
             return str(p)
 
     found = shutil.which(clean_name)
-    if found:
+    if found and _is_valid_tool_binary(Path(found)):
         return found
 
     # Fallback to standard system paths on Linux / Unix
@@ -68,7 +118,7 @@ def find_tool(name: str) -> Optional[str]:
         ]
         for sp in sys_paths:
             p = Path(sp)
-            if p.is_file() and os.access(p, os.X_OK):
+            if _is_valid_tool_binary(p) and os.access(p, os.X_OK):
                 return str(p)
 
     return None
@@ -77,7 +127,7 @@ def find_tool(name: str) -> Optional[str]:
 def need_tool(name: str) -> str:
     p = find_tool(name)
     if not p and sys.platform.startswith("linux"):
-        # Auto-download missing Linux standalone binary from the internet
+        # Auto-download missing Linux standalone ELF binary from the internet
         try:
             from . import fetcher
             fetcher.ensure_linux_tool(name)
@@ -86,13 +136,15 @@ def need_tool(name: str) -> str:
             pass
 
     if not p:
+        clean_name = name.removesuffix(".exe") if sys.platform != "win32" else name
         if sys.platform.startswith("linux"):
             raise ConversionError(
-                f"Required tool '{name}' was not found and could not be downloaded automatically.\n"
-                f"Please ensure internet access, or place '{name}' in the 'tools' directory, or install it via your package manager:\n"
-                f"  Ubuntu/Debian: sudo apt install {name}\n"
-                f"  Fedora:        sudo dnf install {name}\n"
-                f"  Arch:          sudo pacman -S {name}"
+                f"Required Linux tool '{clean_name}' was not found and could not be downloaded automatically.\n"
+                f"Please ensure internet access, or run 'python3 scripts/fetch_tools.py --platform linux', "
+                f"or install it via your package manager:\n"
+                f"  Ubuntu/Debian: sudo apt install {clean_name}\n"
+                f"  Fedora:        sudo dnf install {clean_name}\n"
+                f"  Arch:          sudo pacman -S {clean_name}"
             )
         raise ConversionError(f"Required tool '{name}' was not found (expected in the 'tools' folder).")
     return p
@@ -369,6 +421,7 @@ def kill_active_processes() -> None:
             pass
         try:
             p.kill()
+            p.wait(timeout=1)
         except Exception:
             pass
 
@@ -419,6 +472,7 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
                 pass
             try:
                 p.kill()
+                p.wait(timeout=1)
             except Exception:
                 pass
 
@@ -771,21 +825,51 @@ def read_text(path: Path) -> str:
 def text_to_image(text: str, out: Path, fmt: str, settings) -> None:
     from PIL import Image, ImageDraw, ImageFont
     font = None
-    for name in ("consola.ttf", "cour.ttf", "DejaVuSansMono.ttf", "LiberationMono-Regular.ttf"):
-        for d in (r"C:\Windows\Fonts", "/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/truetype/liberation"):
+    font_names = (
+        "DejaVuSansMono.ttf",
+        "LiberationMono-Regular.ttf",
+        "NotoSansMono-Regular.ttf",
+        "UbuntuMono-R.ttf",
+        "Hack-Regular.ttf",
+        "FiraCode-Regular.ttf",
+        "consola.ttf",
+        "cour.ttf",
+    )
+    font_dirs = (
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/truetype/liberation",
+        "/usr/share/fonts/truetype/noto",
+        "/usr/share/fonts/truetype/ubuntu",
+        "/usr/share/fonts/TTF",
+        "/usr/share/fonts/noto",
+        "/usr/share/fonts/liberation-mono",
+        "/usr/share/fonts/dejavu-sans-mono-fonts",
+        "/usr/local/share/fonts",
+        str(Path.home() / ".local" / "share" / "fonts"),
+        r"C:\Windows\Fonts",
+    )
+    for name in font_names:
+        for d in font_dirs:
             p = Path(d) / name
             if p.exists():
-                font = ImageFont.truetype(str(p), 28)
-                break
+                try:
+                    font = ImageFont.truetype(str(p), 28)
+                    break
+                except Exception:
+                    pass
         if font:
             break
-    font = font or ImageFont.load_default()
+    if not font:
+        try:
+            font = ImageFont.load_default(size=28)
+        except TypeError:
+            font = ImageFont.load_default()
     cols = 100
     lines = []
     import textwrap
     for ln in text.expandtabs(4).splitlines() or [""]:
         lines.extend(textwrap.wrap(ln, cols, replace_whitespace=False, drop_whitespace=False) or [""])
-    lh = int(font.size * 1.35) if hasattr(font, "size") else 14
+    lh = int(getattr(font, "size", 20) * 1.35)
     cw = int(font.getlength("M")) if hasattr(font, "getlength") else 8
     pad = 60
     w, h = cols * cw + pad * 2, min(len(lines) * lh + pad * 2, 60000)
