@@ -12,15 +12,14 @@ if [ ! -d ".venv" ]; then
     python3 -m venv .venv
 fi
 source .venv/bin/activate
-python -m pip install --upgrade pip --quiet
-python -m pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf requests pyinstaller --quiet
+python3 -m pip install --upgrade pip --quiet
+python3 -m pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf pypdf requests pyinstaller --quiet
 
 echo "=== [2/5] Fetching Standalone Linux ELF Conversion Tools (FFmpeg, FFprobe, Pandoc) ==="
-python "$SCRIPT_DIR/fetch_tools.py" --platform linux --dest "$REPO_ROOT/tools"
-find "$REPO_ROOT/tools" -name "*.exe" -delete
+python3 "$SCRIPT_DIR/fetch_tools.py" --dest "$REPO_ROOT/tools"
 chmod +x "$REPO_ROOT/tools/ffmpeg" "$REPO_ROOT/tools/ffprobe" "$REPO_ROOT/tools/pandoc"
 
-echo "=== [3/5] Building Standalone Linux Executable with PyInstaller ==="
+echo "=== [3/5] Building Standalone Linux ELF Binary with PyInstaller ==="
 rm -rf build dist
 pyinstaller --noconfirm --clean --windowed --name Vitarg \
     --add-data "assets:assets" --add-data "tools:tools" \
@@ -29,9 +28,6 @@ pyinstaller --noconfirm --clean --windowed --name Vitarg \
 
 mkdir -p dist/Vitarg/tools
 cp -r tools/* dist/Vitarg/tools/ || true
-find dist/Vitarg -name "*.exe" -delete
-find dist/Vitarg -name "*.bat" -delete
-find dist/Vitarg -name "*.cmd" -delete
 chmod -R +x dist/Vitarg/tools/ || true
 chmod +x dist/Vitarg/Vitarg
 

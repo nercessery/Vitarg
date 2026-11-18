@@ -85,24 +85,36 @@ Download **`Vitarg-Setup.exe`**:
 ### 🐧 Linux
 Download **`Vitarg-linux-x86_64.tar.gz`**:
 - Unpack and run `./Vitarg`
-- Standalone distribution with all dependencies bundled
+- Standalone distribution with all native dependencies and statically-linked ELF conversion tools bundled.
+
+Or run the interactive Linux Setup Wizard from source:
+```bash
+chmod +x install.sh
+./install.sh
+```
 
 ---
 
 ## 🚀 Usage
+
+### 🎯 The Interactive Radial Wheel
+- **Trigger**: Drag any file in your file manager and press **Shift** (Conversion Wheel) or **Alt + Shift** (Tools Wheel) — or drag onto the **Floating Drop Target**.
+- **Persistent Latching**: Once the wheel appears, releasing Shift or the mouse button keeps the wheel open. Take your time to review options!
+- **Interactive Center Toggle**: Click or drop files onto the center circle (or press `Tab`) to instantly flip between **Convert ↔ Tools**.
+- **Execute**: Drop or click on any petal to run that action.
+- **Dismiss**: Click outside the wheel or press `Esc`.
 
 ### On Windows:
 1. Launch `Vitarg.exe` — a tray icon appears in the Windows system tray.
 2. Drag any file in Windows Explorer or Desktop:
    - Hold **Shift** while dragging → **Conversion Wheel**
    - Hold **Alt + Shift** while dragging → **Tools Wheel**
-3. Drop the file onto your desired action petal.
-4. Output is generated cleanly in seconds without modifying the source file.
+3. Right-click context menu: Right-click files in Windows Explorer → "Convert with Vitarg".
 
-### On Linux:
-1. Launch `./Vitarg` — a system tray icon appears (or a floating drop target).
-2. Drag files onto the drop target or use the tray menu to select files.
-3. Drop the file onto your desired action petal to convert.
+### On Linux (X11 & Wayland):
+1. Launch `./Vitarg` (or `./vitarg.sh`) — a tray icon appears.
+2. Drag files in Nautilus, Dolphin, Nemo, Caja or onto the Floating Drop Target.
+3. Right-click context menu: Native scripts integrated into GNOME Nautilus, KDE Dolphin, Nemo, and Caja.
 
 ---
 
@@ -110,7 +122,7 @@ Download **`Vitarg-linux-x86_64.tar.gz`**:
 
 ### Prerequisites
 - **Windows**: Windows 10/11 (x64), Python 3.10+ (3.12 recommended), Inno Setup (optional, for setup installer)
-- **Linux**: Linux 64-bit, Python 3.10+, FFmpeg, Pandoc
+- **Linux**: Linux 64-bit (Ubuntu, Fedora, Arch, etc.), Python 3.10+
 
 ### Windows Build
 ```powershell
@@ -124,12 +136,8 @@ The automated script will initialize the environment, bundle FFmpeg/Pandoc, and 
 ```bash
 git clone https://github.com/nercessery/Vitarg.git
 cd Vitarg
-sudo apt-get update && sudo apt-get install -y ffmpeg pandoc
-python3 -m venv .venv
-source .venv/bin/activate
-pip install PySide6 pillow pillow_heif py7zr python-docx pymupdf requests pyinstaller
-pyinstaller --noconfirm --clean --windowed --name Vitarg \
-  --add-data "assets:assets" \
-  --collect-all pillow_heif --collect-all py7zr --collect-all fitz --collect-all pymupdf \
-  run_vitarg.py
+chmod +x build.sh
+./build.sh
+```
+The one-step Linux build script handles virtual environment setup, standalone Linux ELF tool fetching, PyInstaller compilation, offscreen self-test, and packages `dist/Vitarg-linux-x86_64.tar.gz`.
 ```

@@ -28,6 +28,29 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def clean_subprocess_env() -> dict:
+    """Return an environment dict safe for external Linux binaries when running inside a PyInstaller bundle."""
+    env = os.environ.copy()
+    if sys.platform != "win32" and getattr(sys, "frozen", False):
+        orig = env.get("LD_LIBRARY_PATH_ORIG")
+        if orig is not None:
+            if orig:
+                env["LD_LIBRARY_PATH"] = orig
+            else:
+                env.pop("LD_LIBRARY_PATH", None)
+        else:
+            meipass = str(getattr(sys, "_MEIPASS", ""))
+            exe_dir = str(Path(sys.executable).resolve().parent)
+            ld = env.get("LD_LIBRARY_PATH", "")
+            if ld:
+                parts = [p for p in ld.split(":") if p and p != meipass and p != exe_dir and not p.endswith("/_internal")]
+                if parts:
+                    env["LD_LIBRARY_PATH"] = ":".join(parts)
+                else:
+                    env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def _is_valid_tool_binary(p: Path) -> bool:
     """Validate that p is an executable binary valid for the current OS (never a Windows .exe/PE on Linux)."""
     if not p.is_file():
@@ -457,7 +480,7 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: Progress = _noop,
     cmd = [need_tool("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
            *in_opts, "-progress", "pipe:1", "-nostats", *cleaned_args]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                         encoding="utf-8", errors="replace", creationflags=NOWIN)
+                         encoding="utf-8", errors="replace", creationflags=NOWIN, env=clean_subprocess_env())
     apply_cpu_throttling(p, mode)
     with _PROCESS_LOCK:
         _ACTIVE_PROCESSES.add(p)
@@ -934,7 +957,7 @@ def text_to_html(text: str) -> str:
 
 def pandoc(args: list[str], cwd=None) -> None:
     r = subprocess.run([need_tool("pandoc"), *args], capture_output=True, text=True, cwd=cwd,
-                       encoding="utf-8", errors="replace", creationflags=NOWIN)
+                       encoding="utf-8", errors="replace", creationflags=NOWIN, env=clean_subprocess_env())
     if r.returncode != 0:
         raise ConversionError("Pandoc failed:\n" + r.stderr.strip()[-1500:])
 

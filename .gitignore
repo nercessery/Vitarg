@@ -14,9 +14,10 @@ build/
 dist/
 *.spec
 
-# Bundled binaries (downloaded during build by scripts/fetch_tools.ps1)
-tools/*.exe
-tools/licenses/
+# Bundled binaries (downloaded during build by scripts/fetch_tools.ps1 or fetch_tools.py)
+tools/*
+tools/
+
 
 # Test & runtime logs
 test-results.txt

@@ -28,6 +28,10 @@ elif sys.platform.startswith("linux"):
             import ctypes.util
             x11_path = ctypes.util.find_library("X11") or "libX11.so.6"
             _lib = ctypes.cdll.LoadLibrary(x11_path)
+            try:
+                _lib.XInitThreads()
+            except Exception:
+                pass
             _lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
             _lib.XOpenDisplay.restype = ctypes.c_void_p
             _lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
